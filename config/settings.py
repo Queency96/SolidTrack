@@ -1,6 +1,7 @@
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+import os
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -211,6 +212,6 @@ FRONTEND_URL = config("FRONTEND_URL")
 
 MAP_PROVIDER = "OPENROUTE"
 
-OPENROUTESERVICE_API_KEY = config(
+OPENROUTESERVICE_API_KEY = os.getenv(
     "OPENROUTESERVICE_API_KEY"
 )

@@ -443,3 +443,81 @@ class PricingConfiguration(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+
+
+
+class DispatchConfiguration(TimeStampedModel):
+    """
+    Global dispatch configuration.
+    Only one active configuration should exist.
+    """
+    name = models.CharField(
+        max_length=100,
+        unique=True,
+    )
+
+    # ------------------------
+    # Search Radius
+    # ------------------------
+    initial_search_radius_km = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=3,
+    )
+    maximum_search_radius_km = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=15,
+    )
+    search_radius_increment_km = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=2,
+    )
+
+    # ------------------------
+    # Rider Response
+    # ------------------------
+    rider_response_timeout_seconds = models.PositiveIntegerField(
+        default=30,
+    )
+    max_assignment_attempts = models.PositiveSmallIntegerField(
+        default=5,
+    )
+    auto_redispatch = models.BooleanField(
+        default=True,
+    )
+
+    # ------------------------
+    # Matching
+    # ------------------------
+    minimum_rider_rating = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        default=3.50,
+    )
+    maximum_active_deliveries = models.PositiveSmallIntegerField(
+        default=2,
+    )
+
+    # ------------------------
+    # Scheduling
+    # ------------------------
+    allow_scheduled_dispatch = models.BooleanField(
+        default=True,
+    )
+    dispatch_before_pickup_minutes = models.PositiveIntegerField(
+        default=15,
+    )
+
+    # ------------------------
+    # Status
+    # ------------------------
+    is_active = models.BooleanField(
+        default=True,
+    )
+    class Meta:
+        ordering = ("-created_at",)
+    def __str__(self):
+        return self.name
