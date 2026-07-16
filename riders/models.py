@@ -66,3 +66,42 @@ class RiderProfile(TimeStampedModel):
     )
     def __str__(self):
         return self.user.email
+
+
+
+class RiderLocation(TimeStampedModel):
+    rider = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="location",
+    )
+
+    latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    speed = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0,
+    )
+
+    heading = models.PositiveSmallIntegerField(
+        default=0,
+    )
+
+    accuracy = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0,
+    )
+
+    last_seen = models.DateTimeField(
+        auto_now=True,
+    )

@@ -1,8 +1,5 @@
 from math import radians, sin, cos, sqrt, atan2
-# from math import sin
-# from math import cos
-# from math import sqrt
-# from math import atan2
+
 
 
 EARTH_RADIUS = 6371
