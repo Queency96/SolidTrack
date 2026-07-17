@@ -72,3 +72,14 @@ class DispatchConfigurationError(DispatchException):
     default_message = (
         "Dispatch configuration is invalid."
     )
+
+
+class DispatchConfigurationError(DispatchException):
+    """
+    Raised when the dispatch configuration is invalid
+    or missing required values.
+    """
+
+    default_message = (
+        "Dispatch configuration is invalid."
+    )

@@ -26,3 +26,4 @@ class DispatchConfigurationService:
             timeout=cls.CACHE_TIMEOUT,
         )
         return config
+
