@@ -1,3 +1,4 @@
+from deliveries.dispatch.service import DispatchConfigurationService
 from .assignment import AssignmentService
 from .exceptions import NoAvailableRider
 from .matcher import RiderMatcher
@@ -16,7 +17,12 @@ class DispatchEngine:
         """
         matches = []
 
-        for radius in cls.SEARCH_RADII:
+        config = DispatchConfigurationService.get_configuration()
+
+        radius = config.initial_search_radius_km
+
+        while radius <= config.maximum_search_radius_km:
+
             matches = RiderMatcher.find_nearby_riders(
                 delivery=delivery,
                 radius_km=radius,
@@ -24,6 +30,8 @@ class DispatchEngine:
 
             if matches:
                 break
+
+            radius += config.search_radius_increment_km
 
         if not matches:
             raise NoAvailableRider()
