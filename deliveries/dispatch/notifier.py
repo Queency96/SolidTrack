@@ -1,16 +1,17 @@
-from ..services import NotificationService
-
-
+from deliveries.services import NotificationService
 
 class DispatchNotifier:
     @staticmethod
-    def notify(assignment):
+    def offer_delivery(offer):
         NotificationService.create_notification(
-            user=assignment.rider,
+            user=offer.rider,
             title="New Delivery",
             message=(
-                f"You've been assigned "
-                f"{assignment.delivery.tracking_number}"
+                f"You have a new delivery request."
             ),
-            notification_type="DELIVERY",
+            notification_type="DELIVERY_OFFER",
+            data={
+                "offer_id": offer.id,
+                "delivery_id": offer.delivery.id,
+            },
         )

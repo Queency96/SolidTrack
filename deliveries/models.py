@@ -521,3 +521,72 @@ class DispatchConfiguration(TimeStampedModel):
         ordering = ("-created_at",)
     def __str__(self):
         return self.name
+
+
+
+class DeliveryOffer(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        ACCEPTED = "ACCEPTED", "Accepted"
+        REJECTED = "REJECTED", "Rejected"
+        EXPIRED = "EXPIRED", "Expired"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    delivery = models.ForeignKey(
+        "Delivery",
+        on_delete=models.CASCADE,
+        related_name="offers",
+    )
+    rider = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="delivery_offers",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    search_radius = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+    )
+    offered_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+    responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+    expires_at = models.DateTimeField()
+    rejection_reason = models.TextField(
+        blank=True,
+    )
+    class Meta:
+        ordering = (
+            "-offered_at",
+        )
+        indexes = [
+            models.Index(
+                fields=[
+                    "delivery",
+                    "status",
+                ]
+            ),
+            models.Index(
+                fields=[
+                    "rider",
+                    "status",
+                ]
+            ),
+            models.Index(
+                fields=[
+                    "expires_at",
+                ]
+            ),
+        ]
+    def __str__(self):
+        return (
+            f"{self.delivery.tracking_number} → "
+            f"{self.rider.get_full_name()}"
+        )
