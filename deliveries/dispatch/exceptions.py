@@ -83,3 +83,9 @@ class DispatchConfigurationError(DispatchException):
     default_message = (
         "Dispatch configuration is invalid."
     )
+
+
+class InvalidOfferState(DispatchException):
+    default_message = (
+        "The delivery offer is not in a valid state."
+    )

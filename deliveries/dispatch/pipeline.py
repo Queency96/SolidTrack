@@ -5,6 +5,7 @@ from .exceptions import (
 )
 from .matcher import RiderMatcher
 from .notifier import DispatchNotifier
+from .offer import DeliveryOfferService
 from .response import DispatchResponseService
 from .scorer import RiderScorer
 from .service import DispatchConfigurationService
@@ -19,10 +20,11 @@ class DispatchPipeline:
     1. Load dispatch configuration
     2. Find nearby riders
     3. Rank riders
-    4. Offer delivery to riders
-    5. Wait for acceptance
-    6. Assign delivery
-    7. Notify customer
+    4. Create delivery offers
+    5. Send offer notification
+    6. Wait for rider response
+    7. Assign rider
+    8. Notify customer
     """
     def __init__(self, delivery):
         self.delivery = delivery
@@ -98,29 +100,36 @@ class DispatchPipeline:
         )
         for match in self.ranked_matches:
             rider = match["rider"]
+            offer = (
+                DeliveryOfferService.create_offer(
+                    delivery=self.delivery,
+                    rider=rider,
+                    radius=match["search_radius"],
+                    timeout=timeout,
+                )
+            )
             DispatchNotifier.offer_delivery(
-                rider=rider,
-                delivery=self.delivery,
+                offer
             )
             accepted = (
                 DispatchResponseService
                 .wait_for_response(
-                    delivery=self.delivery,
-                    rider=rider,
+                    offer=offer,
                     timeout=timeout,
                 )
             )
-            if accepted:
-                self.assignment = (
-                    AssignmentService.assign(
-                        delivery=self.delivery,
-                        rider=rider,
-                    )
+            if not accepted:
+                continue
+            self.assignment = (
+                AssignmentService.assign(
+                    delivery=self.delivery,
+                    rider=rider,
                 )
-                DispatchNotifier.notify_customer(
-                    self.assignment
-                )
-                return
+            )
+            DispatchNotifier.notify_customer(
+                self.assignment
+            )
+            return
         raise NoAvailableRider(
             "All riders rejected or timed out."
         )

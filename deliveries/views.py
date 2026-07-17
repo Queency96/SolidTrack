@@ -6,6 +6,24 @@ from rest_framework import status
 from accounts.permissions import (IsCustomer)
 from .serializers import (DeliveryBookingSerializer, PriceEstimateSerializer)
 from .services import DeliveryService, PricingService
+from rest_framework.generics import GenericAPIView
+from deliveries.models import DeliveryOffer
+from dispatch.assignment import AssignmentService
+from dispatch.offer import DeliveryOfferService
+from dispatch.serializers import DeliveryOfferResponseSerializer
+
+
+from django.shortcuts import get_object_or_404
+
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from deliveries.models import DeliveryOffer
+
+from dispatch.serializers import DeliveryAssignmentSerializer
+from dispatch.offer import DeliveryOfferService
+from .serializers import DeliveryOfferResponseSerializer
+
 
 
 
@@ -62,3 +80,70 @@ class PriceEstimateView(APIView):
         )
 
         return Response(estimate)
+
+
+
+
+class DeliveryOfferResponseView(
+    GenericAPIView
+):
+    permission_classes = [
+        IsAuthenticated,
+    ]
+    serializer_class = (
+        DeliveryOfferResponseSerializer
+    )
+    def post(
+        self,
+        request,
+        pk,
+    ):
+        serializer = self.get_serializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
+        offer = get_object_or_404(
+            DeliveryOffer,
+            pk=pk,
+            rider=request.user,
+            status=DeliveryOffer.Status.PENDING,
+        )
+        result = (
+            DeliveryOfferService.respond(
+                offer=offer,
+                action=serializer.validated_data[
+                    "action"
+                ],
+                reason=serializer.validated_data.get(
+                    "rejection_reason",
+                    "",
+                ),
+            )
+        )
+        if (
+            serializer.validated_data["action"]
+            == "accept"
+        ):
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        "Delivery offer accepted."
+                    ),
+                    "assignment":
+                    DeliveryAssignmentSerializer(
+                        result
+                    ).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {
+                "success": True,
+                "message":
+                "Delivery offer rejected.",
+            },
+            status=status.HTTP_200_OK,
+        )

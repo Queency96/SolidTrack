@@ -128,3 +128,30 @@ class PriceEstimateSerializer(serializers.Serializer):
     insurance = serializers.BooleanField(
         default=False,
     )
+
+
+from deliveries.constants import DeliveryOfferAction
+
+
+class DeliveryOfferResponseSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=DeliveryOfferAction.CHOICES,
+    )
+    rejection_reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+
+    def validate(self, attrs):
+        if (
+            attrs["action"]
+            == DeliveryOfferAction.REJECT
+            and not attrs.get("rejection_reason")
+        ):
+            raise serializers.ValidationError(
+                {
+                    "rejection_reason":
+                    "This field is required."
+                }
+            )
+        return attrs
