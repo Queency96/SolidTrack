@@ -110,40 +110,26 @@ class DeliveryOfferResponseView(
             rider=request.user,
             status=DeliveryOffer.Status.PENDING,
         )
-        result = (
-            DeliveryOfferService.respond(
-                offer=offer,
-                action=serializer.validated_data[
-                    "action"
-                ],
-                reason=serializer.validated_data.get(
-                    "rejection_reason",
-                    "",
-                ),
-            )
+        result = DispatchCoordinator.respond_to_offer(
+            offer=offer,
+            action=action,
+            reason=reason,
         )
-        if (
-            serializer.validated_data["action"]
-            == "accept"
-        ):
+
+        if result["status"] == "accepted":
+
             return Response(
                 {
                     "success": True,
-                    "message": (
-                        "Delivery offer accepted."
-                    ),
                     "assignment":
                     DeliveryAssignmentSerializer(
-                        result
+                        result["assignment"]
                     ).data,
-                },
-                status=status.HTTP_200_OK,
+                }
             )
+
         return Response(
             {
                 "success": True,
-                "message":
-                "Delivery offer rejected.",
-            },
-            status=status.HTTP_200_OK,
+            }
         )

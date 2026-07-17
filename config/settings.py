@@ -108,40 +108,25 @@ DATABASES = {
 }
 
 
-
 REST_FRAMEWORK = {
-
     "DEFAULT_AUTHENTICATION_CLASSES": (
-
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-
     ),
-
     "DEFAULT_PERMISSION_CLASSES": (
-
         "rest_framework.permissions.IsAuthenticated",
-
     ),
-
     "DEFAULT_FILTER_BACKENDS": (
-
         "django_filters.rest_framework.DjangoFilterBackend",
-
     ),
-
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 
 
 SIMPLE_JWT = {
-
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
-
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-
     "ROTATE_REFRESH_TOKENS": True,
-
     "BLACKLIST_AFTER_ROTATION": True,
 }
 
@@ -172,11 +157,8 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
 
@@ -184,7 +166,6 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
-
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -199,7 +180,6 @@ AUTH_USER_MODEL = "accounts.User"
 
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-
 EMAIL_HOST = config("EMAIL_HOST")
 EMAIL_PORT = config("EMAIL_PORT", cast=int)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER")
@@ -215,3 +195,5 @@ MAP_PROVIDER = "OPENROUTE"
 OPENROUTESERVICE_API_KEY = os.getenv(
     "OPENROUTESERVICE_API_KEY"
 )
+
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=lambda v: [s.strip() for s in v.split(",")])
