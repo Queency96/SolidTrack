@@ -6,7 +6,8 @@ class DistanceService:
     Facade for map providers.
     """
 
-    provider = MapProviderFactory.get_provider()
+    # provider = MapProviderFactory.get_provider()
+    provider = None  # Temporary placeholder
 
     @classmethod
     def get_distance(

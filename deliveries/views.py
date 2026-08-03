@@ -11,15 +11,10 @@ from deliveries.models import DeliveryOffer
 from dispatch.assignment import AssignmentService
 from dispatch.offer import DeliveryOfferService
 from dispatch.serializers import DeliveryOfferResponseSerializer
-
-
 from django.shortcuts import get_object_or_404
-
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
 from deliveries.models import DeliveryOffer
-
 from dispatch.serializers import DeliveryAssignmentSerializer
 from dispatch.offer import DeliveryOfferService
 from .serializers import DeliveryOfferResponseSerializer

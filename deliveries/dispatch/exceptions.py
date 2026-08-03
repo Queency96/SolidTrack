@@ -89,3 +89,15 @@ class InvalidOfferState(DispatchException):
     default_message = (
         "The delivery offer is not in a valid state."
     )
+
+
+class AssignmentAlreadyExists(DispatchException):
+    default_message = (
+        "An assignment already exists for this delivery."
+    )
+
+
+class InvalidAssignmentState(DispatchException):
+    default_message = (
+        "The assignment cannot be performed in the current state."
+    )

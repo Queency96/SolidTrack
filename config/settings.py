@@ -25,6 +25,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    "daphne",
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -52,6 +53,7 @@ INSTALLED_APPS = [
     "chat",
     "notifications",
     "common",
+    "communications",
 ]
 
 MIDDLEWARE = [
@@ -83,6 +85,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 
 # Database
@@ -192,8 +195,11 @@ FRONTEND_URL = config("FRONTEND_URL")
 
 MAP_PROVIDER = "OPENROUTE"
 
-OPENROUTESERVICE_API_KEY = os.getenv(
-    "OPENROUTESERVICE_API_KEY"
-)
+OPENROUTESERVICE_API_KEY = config("OPENROUTESERVICE_API_KEY")
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=lambda v: [s.strip() for s in v.split(",")])
+
+WHATSAPP_PHONE_NUMBER_ID = config("WHATSAPP_PHONE_NUMBER_ID")
+WHATSAPP_ACCESS_TOKEN = config("WHATSAPP_ACCESS_TOKEN")
+WHATSAPP_BUSINESS_ACCOUNT_ID = config("WHATSAPP_BUSINESS_ACCOUNT_ID")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = config("WHATSAPP_WEBHOOK_VERIFY_TOKEN")

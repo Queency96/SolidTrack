@@ -18,7 +18,20 @@ from .pricing.calculator import PricingCalculator
 
 
 
+from django.db import transaction
+
+from deliveries.models import (
+    Delivery,
+    Package,
+    DeliveryAddress,
+)
+
+# from dispatch.coordinator import DispatchCoordinator
+from deliveries.dispatch.coordinator import DispatchCoordinator
+
+
 class DeliveryService:
+
     @staticmethod
     @transaction.atomic
     def create_delivery(
@@ -60,18 +73,12 @@ class DeliveryService:
             **destination_data,
         )
 
-        NotificationService.create_notification(
-            user=customer,
-            title="Delivery Booked",
-            message=(
-                f"Tracking Number: "
-                f"{delivery.tracking_number}"
-            ),
-            notification_type="DELIVERY",
+        # Start the delivery workflow.
+        DispatchCoordinator.delivery_created(
+            delivery
         )
 
         return delivery
-
 
 class DistanceService:
 

@@ -1,26 +1,42 @@
 from datetime import timedelta
-from deliveries.constants import DeliveryOfferAction
+
 from django.db import transaction
 from django.utils import timezone
+
 from deliveries.models import DeliveryOffer
-from .assignment import AssignmentService
+
 from .exceptions import InvalidOfferState
 
 
 class DeliveryOfferService:
+    """
+    Handles the lifecycle of delivery offers.
 
-    # ------------------------------------------
+    Responsibilities
+    ----------------
+    • Create offers
+    • Accept offers
+    • Reject offers
+    • Expire offers
+    • Cancel offers
+
+    This service DOES NOT create assignments or
+    trigger redispatching.
+    """
+
+    # ==================================================
     # Create Offer
-    # ------------------------------------------
-    @staticmethod
+    # ==================================================
+
+    @classmethod
     @transaction.atomic
-    def create_offer(
+    def create(
+        cls,
         delivery,
         rider,
         radius,
         timeout,
     ):
-
         return DeliveryOffer.objects.create(
             delivery=delivery,
             rider=rider,
@@ -31,101 +47,119 @@ class DeliveryOfferService:
             ),
         )
 
-    # ------------------------------------------
-    # Public Response Entry Point
-    # ------------------------------------------
-    @staticmethod
-    @transaction.atomic
-    def respond(
-        offer,
-        action,
-        reason="",
-    ):
-
-        offer = (
-            DeliveryOffer.objects
-            .select_for_update()
-            .get(pk=offer.pk)
-        )
-
-        if action == DeliveryOfferAction.ACCEPT:
-            return DeliveryOfferService.accept(
-                offer
-            )
-
-        if action == DeliveryOfferAction.REJECT:
-            return DeliveryOfferService.reject(
-                offer,
-                reason,
-            )
-
-        raise InvalidOfferState(
-            "Invalid offer action."
-        )
-
-    # ------------------------------------------
+    # ==================================================
     # Accept
-    # ------------------------------------------
-    @staticmethod
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
     def accept(
+        cls,
         offer,
     ):
-        DeliveryOfferService._validate_pending(
-            offer
+        offer = cls._lock_offer(
+            offer,
         )
-        DeliveryOfferService._update_status(
+
+        cls._validate_pending(
+            offer,
+        )
+
+        cls._update_status(
             offer,
             DeliveryOffer.Status.ACCEPTED,
         )
-        DeliveryOfferService._cancel_other_offers(
-            offer
-        )
-        return AssignmentService.assign(
-            delivery=offer.delivery,
-            rider=offer.rider,
+
+        cls._cancel_other_offers(
+            offer,
         )
 
-    # ------------------------------------------
+        return offer
+
+    # ==================================================
     # Reject
-    # ------------------------------------------
-    @staticmethod
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
     def reject(
+        cls,
         offer,
         reason="",
     ):
-        DeliveryOfferService._validate_pending(
-            offer
+        offer = cls._lock_offer(
+            offer,
         )
-        offer.rejection_reason = reason
 
-        DeliveryOfferService._update_status(
+        cls._validate_pending(
+            offer,
+        )
+
+        cls._update_status(
             offer,
             DeliveryOffer.Status.REJECTED,
-            save_reason=True,
+            rejection_reason=reason,
         )
+
         return offer
 
-    # ------------------------------------------
+    # ==================================================
     # Expire
-    # ------------------------------------------
-    @staticmethod
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
     def expire(
+        cls,
         offer,
     ):
-        DeliveryOfferService._validate_pending(
-            offer
+        offer = cls._lock_offer(
+            offer,
         )
-        DeliveryOfferService._update_status(
+
+        cls._validate_pending(
+            offer,
+        )
+
+        cls._update_status(
             offer,
             DeliveryOffer.Status.EXPIRED,
         )
+
         return offer
 
-    # ------------------------------------------
+    # ==================================================
+    # Cancel
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
+    def cancel(
+        cls,
+        offer,
+    ):
+        offer = cls._lock_offer(
+            offer,
+        )
+
+        cls._validate_pending(
+            offer,
+        )
+
+        cls._update_status(
+            offer,
+            DeliveryOffer.Status.CANCELLED,
+        )
+
+        return offer
+
+    # ==================================================
     # Cancel Remaining Offers
-    # ------------------------------------------
-    @staticmethod
+    # ==================================================
+
+    @classmethod
     def _cancel_other_offers(
+        cls,
         accepted_offer,
     ):
         DeliveryOffer.objects.filter(
@@ -138,32 +172,67 @@ class DeliveryOfferService:
             responded_at=timezone.now(),
         )
 
-    # ------------------------------------------
+    # ==================================================
+    # Lock
+    # ==================================================
+
+    @staticmethod
+    def _lock_offer(
+        offer,
+    ):
+        return (
+            DeliveryOffer.objects
+            .select_for_update()
+            .select_related(
+                "delivery",
+                "rider",
+            )
+            .get(
+                pk=offer.pk,
+            )
+        )
+
+    # ==================================================
     # Update Status
-    # ------------------------------------------
+    # ==================================================
+
     @staticmethod
     def _update_status(
         offer,
         status,
-        save_reason=False,
+        **extra_fields,
     ):
         offer.status = status
-        offer.responded_at = timezone.now()
-        fields = [
+
+        update_fields = [
             "status",
             "responded_at",
         ]
-        if save_reason:
-            fields.append(
-                "rejection_reason"
-            )
-        offer.save(
-            update_fields=fields,
+
+        offer.responded_at = (
+            timezone.now()
         )
 
-    # ------------------------------------------
+        for field, value in extra_fields.items():
+            setattr(
+                offer,
+                field,
+                value,
+            )
+            update_fields.append(
+                field,
+            )
+
+        offer.save(
+            update_fields=update_fields,
+        )
+
+        return offer
+
+    # ==================================================
     # Validation
-    # ------------------------------------------
+    # ==================================================
+
     @staticmethod
     def _validate_pending(
         offer,
@@ -175,6 +244,7 @@ class DeliveryOfferService:
             raise InvalidOfferState(
                 "Only pending offers can be updated."
             )
+
         if offer.expires_at <= timezone.now():
             raise InvalidOfferState(
                 "This delivery offer has expired."

@@ -1,4 +1,5 @@
 
+from django.utils import timezone
 import uuid
 from django.conf import settings
 from django.db import models
@@ -447,78 +448,226 @@ class PricingConfiguration(TimeStampedModel):
 
 
 
+
+
+
 class DispatchConfiguration(TimeStampedModel):
     """
     Global dispatch configuration.
+
     Only one active configuration should exist.
     """
+# --------------------------------------------------
+# Dispatch Strategy
+# --------------------------------------------------
+    class DispatchStrategy(models.TextChoices):
+        BALANCED = (
+            "BALANCED",
+            "Balanced",
+        )
+
+        NEAREST = (
+            "NEAREST",
+            "Nearest Rider",
+        )
+
+        PERFORMANCE = (
+            "PERFORMANCE",
+            "Performance Based",
+        )
+
+        VENDOR_PRIORITY = (
+            "VENDOR_PRIORITY",
+            "Vendor Priority",
+        )
+
+        CUSTOMER_PRIORITY = (
+            "CUSTOMER_PRIORITY",
+            "Customer Priority",
+        )
+
+        FAIR_DISTRIBUTION = (
+            "FAIR_DISTRIBUTION",
+            "Fair Distribution",
+        )
+
+        EXPRESS = (
+            "EXPRESS",
+            "Express Delivery",
+        )
+
     name = models.CharField(
         max_length=100,
         unique=True,
     )
 
-    # ------------------------
+    dispatch_strategy = models.CharField(
+        max_length=30,
+        choices=DispatchStrategy.choices,
+        default=DispatchStrategy.BALANCED,
+        help_text=(
+            "Determines how riders are "
+            "ranked during dispatch."
+        ),
+    )
+
+    # --------------------------------------------------
     # Search Radius
-    # ------------------------
+    # --------------------------------------------------
+
     initial_search_radius_km = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=3,
     )
+
     maximum_search_radius_km = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=15,
     )
+
     search_radius_increment_km = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=2,
     )
 
-    # ------------------------
+    # --------------------------------------------------
     # Rider Response
-    # ------------------------
-    rider_response_timeout_seconds = models.PositiveIntegerField(
-        default=30,
+    # --------------------------------------------------
+
+    rider_response_timeout_seconds = (
+        models.PositiveIntegerField(
+            default=30,
+        )
     )
-    max_assignment_attempts = models.PositiveSmallIntegerField(
-        default=5,
+
+    max_assignment_attempts = (
+        models.PositiveSmallIntegerField(
+            default=5,
+        )
     )
+
     auto_redispatch = models.BooleanField(
         default=True,
     )
 
-    # ------------------------
-    # Matching
-    # ------------------------
+    # --------------------------------------------------
+    # Matching Rules
+    # --------------------------------------------------
+
     minimum_rider_rating = models.DecimalField(
         max_digits=3,
         decimal_places=2,
         default=3.50,
     )
-    maximum_active_deliveries = models.PositiveSmallIntegerField(
+
+    maximum_active_deliveries = (
+        models.PositiveSmallIntegerField(
+            default=2,
+        )
+    )
+
+    # --------------------------------------------------
+    # Dispatch Scoring Weights
+    # --------------------------------------------------
+
+    rating_weight = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=10,
+    )
+
+    distance_weight = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
         default=2,
     )
 
-    # ------------------------
-    # Scheduling
-    # ------------------------
-    allow_scheduled_dispatch = models.BooleanField(
-        default=True,
-    )
-    dispatch_before_pickup_minutes = models.PositiveIntegerField(
-        default=15,
+    workload_weight = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=5,
     )
 
-    # ------------------------
+    acceptance_rate_weight = (
+        models.DecimalField(
+            max_digits=6,
+            decimal_places=2,
+            default=4,
+        )
+    )
+
+    completion_rate_weight = (
+        models.DecimalField(
+            max_digits=6,
+            decimal_places=2,
+            default=3,
+        )
+    )
+
+    cancellation_rate_weight = (
+        models.DecimalField(
+            max_digits=6,
+            decimal_places=2,
+            default=8,
+        )
+    )
+
+    experience_weight = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=2,
+    )
+
+    # --------------------------------------------------
+    # Dispatch Behaviour
+    # --------------------------------------------------
+
+    dispatch_strategy = models.CharField(
+        max_length=30,
+        choices=DispatchStrategy.choices,
+        default=DispatchStrategy.BALANCED,
+    )
+
+    offer_batch_size = models.PositiveSmallIntegerField(
+        default=1,
+        help_text=(
+            "Number of riders offered "
+            "a delivery simultaneously."
+        ),
+    )
+
+    # --------------------------------------------------
+    # Scheduling
+    # --------------------------------------------------
+
+    allow_scheduled_dispatch = (
+        models.BooleanField(
+            default=True,
+        )
+    )
+
+    dispatch_before_pickup_minutes = (
+        models.PositiveIntegerField(
+            default=15,
+        )
+    )
+
+    # --------------------------------------------------
     # Status
-    # ------------------------
+    # --------------------------------------------------
+
     is_active = models.BooleanField(
         default=True,
     )
+
     class Meta:
-        ordering = ("-created_at",)
+        ordering = (
+            "-created_at",
+        )
+
     def __str__(self):
         return self.name
 
@@ -589,4 +738,114 @@ class DeliveryOffer(TimeStampedModel):
         return (
             f"{self.delivery.tracking_number} → "
             f"{self.rider.get_full_name()}"
+        )
+
+
+class DeliveryTimeline(TimeStampedModel):
+    class EventType(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        SEARCHING_RIDERS = (
+            "SEARCHING_RIDERS",
+            "Searching Riders",
+        )
+        OFFER_SENT = (
+            "OFFER_SENT",
+            "Offer Sent",
+        )
+        OFFER_ACCEPTED = (
+            "OFFER_ACCEPTED",
+            "Offer Accepted",
+        )
+        OFFER_REJECTED = (
+            "OFFER_REJECTED",
+            "Offer Rejected",
+        )
+        OFFER_EXPIRED = (
+            "OFFER_EXPIRED",
+            "Offer Expired",
+        )
+        ASSIGNED = (
+            "ASSIGNED",
+            "Assigned",
+        )
+        RIDER_ARRIVED = (
+            "RIDER_ARRIVED",
+            "Rider Arrived",
+        )
+        PICKED_UP = (
+            "PICKED_UP",
+            "Picked Up",
+        )
+        IN_TRANSIT = (
+            "IN_TRANSIT",
+            "In Transit",
+        )
+        DELIVERED = (
+            "DELIVERED",
+            "Delivered",
+        )
+        CANCELLED = (
+            "CANCELLED",
+            "Cancelled",
+        )
+
+    delivery = models.ForeignKey(
+        Delivery,
+        on_delete=models.CASCADE,
+        related_name="timeline",
+    )
+
+    rider = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    event = models.CharField(
+        max_length=50,
+        choices=EventType.choices,
+    )
+
+    title = models.CharField(
+        max_length=255,
+    )
+
+    description = models.TextField(
+        blank=True,
+    )
+
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+
+    occurred_at = models.DateTimeField(
+        default=timezone.now,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="delivery_timeline_events",
+    )
+    class Meta:
+        ordering = [
+            "-occurred_at",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "delivery",
+                    "occurred_at",
+                ]
+            ),
+        ]
+    def __str__(self):
+        return (
+            f"{self.delivery.tracking_number}"
+            f" - {self.title}"
         )
