@@ -4,7 +4,7 @@ from .exceptions import (
     NoAvailableRider,
 )
 from .matcher import RiderMatcher
-# from .notifier import DispatchNotifier
+from .notifier import DispatchNotifier
 from .offer import DeliveryOfferService
 from .result import DispatchResult
 from .scorer import RiderScorer

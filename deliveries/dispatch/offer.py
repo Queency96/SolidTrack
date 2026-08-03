@@ -1,10 +1,7 @@
 from datetime import timedelta
-
 from django.db import transaction
 from django.utils import timezone
-
 from deliveries.models import DeliveryOffer
-
 from .exceptions import InvalidOfferState
 
 
