@@ -4,7 +4,6 @@ from .exceptions import (
     NoAvailableRider,
 )
 from .matcher import RiderMatcher
-from .notifier import DispatchNotifier
 from .offer import DeliveryOfferService
 from .result import DispatchResult
 from .scorer import RiderScorer
@@ -25,7 +24,6 @@ class DispatchPipeline:
     Rider responses are handled asynchronously by
     the DispatchCoordinator.
     """
-
     def __init__(
         self,
         context: DispatchContext,
@@ -169,6 +167,8 @@ class DispatchPipeline:
                 ),
             )
         )
+
+        from .notifier import DispatchNotifier
 
         DispatchNotifier.offer_delivery(
             offer,

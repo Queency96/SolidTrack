@@ -13,30 +13,28 @@ class LoginSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        email = attrs.get("email")
-        password = attrs.get("password")
+        email = attrs["email"]
+        password = attrs["password"]
+
         user = authenticate(
+            request=self.context.get("request"),
             username=email,
-            password=password
+            password=password,
         )
 
-        if not user:
-            raise serializers.ValidationError(
-                "Invalid email or password."
-            )
+        if user is None:
+            raise serializers.ValidationError("Invalid email or password.")
 
         if not user.is_active:
-            raise serializers.ValidationError(
-                "Account is disabled."
-            )
+            raise serializers.ValidationError("Account is disabled.")
 
         refresh = RefreshToken.for_user(user)
 
-        return {
-            "user": user,
-            "access": str(refresh.access_token),
-            "refresh": str(refresh),
-        }
+        attrs["user"] = user
+        attrs["access"] = str(refresh.access_token)
+        attrs["refresh"] = str(refresh)
+
+        return attrs
 
 
 class UserSerializer(serializers.ModelSerializer):

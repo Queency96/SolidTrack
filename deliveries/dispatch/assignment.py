@@ -284,7 +284,7 @@ class AssignmentService:
 
         cls._update_assignment_status(
             assignment,
-            DeliveryAssignment.AssignmentStatus.REASSIGNED,
+            DeliveryAssignment.AssignmentStatus.ASSIGNED,
         )
 
         return assignment

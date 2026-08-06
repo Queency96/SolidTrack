@@ -4,20 +4,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
-
 from accounts.services import AccountService, PhoneOTP, send_verification_email
 from .serializers import RegisterSerializer, VerifyPhoneSerializer
 from django.utils import timezone
 from .models import EmailVerification
-
-
-
 from .serializers import (
     LoginSerializer,
     UserSerializer,
 )
-
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status

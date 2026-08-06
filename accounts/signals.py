@@ -16,7 +16,7 @@ def create_user_profile(sender, instance, created, **kwargs):
     if instance.role == User.Roles.CUSTOMER:
         CustomerProfile.objects.create(
             user=instance,
-            referral_code=f"REF{instance.id:06}"
+            referral_code=f"REF{instance.id.hex[:8].upper()}"
         )
 
     elif instance.role == User.Roles.VENDOR:

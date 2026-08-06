@@ -849,3 +849,48 @@ class DeliveryTimeline(TimeStampedModel):
             f"{self.delivery.tracking_number}"
             f" - {self.title}"
         )
+
+
+class AssignmentAction(models.TextChoices):
+
+    ACCEPT = "accept", "Accept"
+
+    START_PICKUP = (
+        "start_pickup",
+        "Start Pickup",
+    )
+
+    ARRIVE_PICKUP = (
+        "arrive_pickup",
+        "Arrive Pickup",
+    )
+
+    PICKUP_COMPLETED = (
+        "pickup_completed",
+        "Pickup Completed",
+    )
+
+    START_DELIVERY = (
+        "start_delivery",
+        "Start Delivery",
+    )
+
+    ARRIVE_DESTINATION = (
+        "arrive_destination",
+        "Arrive Destination",
+    )
+
+    COMPLETE = (
+        "complete",
+        "Complete",
+    )
+
+    CANCEL = (
+        "cancel",
+        "Cancel",
+    )
+
+    REASSIGN = (
+        "reassign",
+        "Reassign",
+    )

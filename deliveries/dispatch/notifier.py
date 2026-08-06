@@ -1,5 +1,3 @@
-from deliveries.services import NotificationService
-
 
 class DispatchNotifier:
     """
@@ -9,7 +7,7 @@ class DispatchNotifier:
     NotificationService decides which communication
     channels are used.
     """
-
+    
     # ==================================================
     # Delivery Offer
     # ==================================================
@@ -232,6 +230,8 @@ class DispatchNotifier:
         send_sms=False,
         send_push=False,
     ):
+        from deliveries.services import NotificationService
+
         NotificationService.notify(
             user=user,
             title=title,
