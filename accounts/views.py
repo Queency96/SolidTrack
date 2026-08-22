@@ -1,75 +1,80 @@
-from django.shortcuts import render
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.generics import GenericAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-from accounts.services import AccountService, PhoneOTP, send_verification_email
-from .serializers import RegisterSerializer, VerifyPhoneSerializer
-from django.utils import timezone
-from .models import EmailVerification
+from drf_spectacular.utils import extend_schema
+
+from .models import User, EmailVerification
 from .serializers import (
     LoginSerializer,
+    RegisterSerializer,
     UserSerializer,
+    VerifyPhoneSerializer,
+    LogoutSerializer,
 )
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User
-from .serializers import RegisterSerializer, UserSerializer
+from .services import (
+    AccountService,
+    PhoneOTP,
+    send_verification_email,
+)
 
 
-class RegisterCustomerView(APIView):
+
+class RegisterCustomerView(GenericAPIView):
     permission_classes = []
-
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+    serializer_class = RegisterSerializer
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save(role=User.Roles.CUSTOMER)
-        refresh = RefreshToken.for_user(user)
-
         return Response(
             {
                 "success": True,
                 "message": "Customer registration successful.",
-                # "access": str(refresh.access_token),
-                # "refresh": str(refresh),
                 "user": UserSerializer(user).data,
             },
             status=status.HTTP_201_CREATED,
         )
 
 
-class RegisterVendor_Rider_Admin_View(APIView):
-    permission_classes = []
 
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+class RegisterVendor_Rider_Admin_View(GenericAPIView):
+    permission_classes = []
+    serializer_class = RegisterSerializer
+    def post(self, request, *args, **kwargs):
+        ROLE = self.request['role']  # Assuming the role is passed in the request data
+        if not ROLE:
+            return Response(
+                "Chose a role"
+            )
+            
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         user = serializer.save()
-        refresh = RefreshToken.for_user(user)
 
         return Response(
             {
                 "success": True,
-                "message": "Vendor registration successful.",
-                # "access": str(refresh.access_token),
-                # "refresh": str(refresh),
+                "message": "Registration successful.",
                 "user": UserSerializer(user).data,
             },
             status=status.HTTP_201_CREATED,
         )
 
 
-class RegisterRiderView(APIView):
+class RegisterRiderView(GenericAPIView):
     permission_classes = []
-
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+    serializer_class = RegisterSerializer
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         user = serializer.save(role=User.Roles.RIDER)
+
         refresh = RefreshToken.for_user(user)
+
         return Response(
             {
                 "success": True,
@@ -82,18 +87,13 @@ class RegisterRiderView(APIView):
         )
 
 
-class LoginView(APIView):
 
+class LoginView(GenericAPIView):
     permission_classes = []
-
-    def post(self, request):
-        serializer = LoginSerializer(
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
+    serializer_class = LoginSerializer
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
 
@@ -103,190 +103,126 @@ class LoginView(APIView):
                 "message": "Login successful.",
                 "access": data["access"],
                 "refresh": data["refresh"],
-                "user": UserSerializer(
-                    data["user"]
-                ).data,
+                "user": UserSerializer(data["user"]).data,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
 
 
-class CurrentUserView(APIView):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def get(self, request):
-        serializer = UserSerializer(
-            request.user
-        )
-
-        return Response(
-            serializer.data
-        )
-  
-
-class LogoutView(APIView):
-
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def post(self, request):
-
-        try:
-
-            refresh_token = request.data.get(
-                "refresh"
-            )
-
-            token = RefreshToken(
-                refresh_token
-            )
-
-            token.blacklist()
-
-            return Response(
-                {
-                    "success": True,
-                    "message": "Logout successful."
-                }
-            )
-
-        except Exception:
-            return Response(
-                {
-                    "success": False,
-                    "message": "Invalid token."
-                },
-                status=400
-            )
+@extend_schema(request=None)
+class CurrentUserView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        return Response(UserSerializer(request.user).data)
 
 
-class VerifyEmailView(APIView):
 
-    permission_classes = []
+class LogoutView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LogoutSerializer
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-    def get(self, request, token):
-
-        try:
-
-            verification = EmailVerification.objects.get(
-                token=token
-            )
-
-        except EmailVerification.DoesNotExist:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Invalid verification link."
-                },
-                status=400
-            )
-
-        if verification.is_used:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Verification link has already been used."
-                },
-                status=400
-            )
-
-        if verification.is_expired():
-
-            return Response(
-                {
-                    "success": False,
-                    "message": "Verification link has expired."
-                },
-                status=400
-            )
-
-        verification.user.is_email_verified = True
-        verification.user.save()
-
-        verification.is_used = True
-        verification.save()
+        token = RefreshToken(serializer.validated_data["refresh"])
+        token.blacklist()
 
         return Response(
             {
                 "success": True,
-                "message": "Email verified successfully."
+                "message": "Logout successful.",
             }
         )
 
 
 
-class ResendVerificationEmailView(APIView):
+@extend_schema(request=None)
+class VerifyEmailView(GenericAPIView):
+    permission_classes = []
+    def get(self, request, token, *args, **kwargs):
+        try:
+            email_verification = EmailVerification.objects.get(token=token)
+        except EmailVerification.DoesNotExist:
+            return Response({"success": False, "message": "Invalid token."})
 
+        if email_verification.is_expired():
+            return Response({"success": False, "message": "Token expired."})
+
+        email_verification.user.is_active = True
+        email_verification.user.save()
+
+        email_verification.is_used = True
+        email_verification.save()
+
+        return Response({"success": True, "message": "Email verified."})
+
+
+@extend_schema(request=None)
+class ResendVerificationEmailView(GenericAPIView):
     permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-
+    def post(self, request, *args, **kwargs):
         if request.user.is_email_verified:
-
             return Response(
                 {
-                    "message": "Email already verified."
-                }
+                    "success": False,
+                    "message": "Email already verified.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         EmailVerification.objects.filter(
             user=request.user,
-            is_used=False
+            is_used=False,
         ).delete()
 
         verification = EmailVerification.objects.create(
-            user=request.user
+            user=request.user,
         )
 
         send_verification_email(
             request.user,
-            verification.token
+            verification.token,
         )
 
         return Response(
             {
                 "success": True,
-                "message": "Verification email sent."
+                "message": "Verification email sent.",
+            }
+        )
+
+
+@extend_schema(request=None)
+class SendPhoneOTPView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, *args, **kwargs):
+        if request.user.is_phone_verified:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Phone already verified.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        AccountService.send_phone_otp(request.user)
+
+        return Response(
+            {
+                "success": True,
+                "message": "OTP sent successfully.",
             }
         )
 
 
 
-class SendPhoneOTPView(APIView):
+class VerifyPhoneView(GenericAPIView):
     permission_classes = [IsAuthenticated]
-    def post(self, request):
-        if request.user.is_phone_verified:
-            return Response({
-                "message":
-                "Phone already verified."
-            })
-
-        AccountService.send_phone_otp(
-            request.user
-        )
-
-        return Response({
-            "success": True,
-            "message":
-            "OTP sent successfully."
-        })
-
-
-class VerifyPhoneView(APIView):
-    permission_classes = [IsAuthenticated]
-    def post(self, request):
-        serializer = VerifyPhoneSerializer(
-            data=request.data
-        )
-        serializer.is_valid(
-            raise_exception=True
-        )
+    serializer_class = VerifyPhoneSerializer
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         otp = serializer.validated_data["otp"]
 
@@ -294,44 +230,37 @@ class VerifyPhoneView(APIView):
             phone_otp = PhoneOTP.objects.get(
                 user=request.user,
                 code=otp,
-                is_used=False
+                is_used=False,
             )
-
         except PhoneOTP.DoesNotExist:
             return Response(
                 {
                     "success": False,
-                    "message":
-                    "Invalid OTP."
+                    "message": "Invalid OTP.",
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if phone_otp.is_expired():
             return Response(
                 {
                     "success": False,
-                    "message":
-                    "OTP expired."
+                    "message": "OTP expired.",
                 },
-                status=400
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         request.user.is_phone_verified = True
-        request.user.save()
+        request.user.save(update_fields=["is_phone_verified"])
+
         phone_otp.is_used = True
-        phone_otp.save()
+        phone_otp.save(update_fields=["is_used"])
 
         return Response(
             {
                 "success": True,
-                "message":
-                "Phone verified."
+                "message": "Phone verified.",
             }
         )
-
-
-
-
 
 

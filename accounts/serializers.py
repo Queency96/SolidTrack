@@ -154,3 +154,28 @@ class VerifyPhoneSerializer(serializers.Serializer):
     otp = serializers.CharField(
         max_length=6
     )
+
+
+
+class SendPhoneOTPSerializer(serializers.Serializer):
+
+    phone_number = serializers.CharField(
+        max_length=15
+    )
+
+    def validate_phone_number(self, value):
+        value = value.strip()
+
+        if User.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError(
+                "Phone number already exists."
+            )
+
+        return value
+    
+
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField()
+
+
