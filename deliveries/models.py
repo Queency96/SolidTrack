@@ -5,30 +5,56 @@ from django.conf import settings
 from django.db import models
 from common.models import TimeStampedModel
 from decimal import Decimal
-
+from riders.models import RiderProfile
 
 
 
 class Delivery(TimeStampedModel):
+
+    # ==================================================
+    # Delivery Type
+    # ==================================================
+
     class DeliveryType(models.TextChoices):
         INSTANT = "INSTANT", "Instant"
         SCHEDULED = "SCHEDULED", "Scheduled"
 
+    # ==================================================
+    # Delivery Status
+    # ==================================================
+
     class DeliveryStatus(models.TextChoices):
         PENDING = "PENDING", "Pending"
-        WAITING_FOR_RIDER = "WAITING_FOR_RIDER", "Waiting for Rider"
-        RIDER_ASSIGNED = "RIDER_ASSIGNED", "Rider Assigned"
-        RIDER_ACCEPTED = "RIDER_ACCEPTED", "Rider Accepted"
+        WAITING_FOR_RIDER = (
+            "WAITING_FOR_RIDER",
+            "Waiting for Rider",
+        )
+        RIDER_ASSIGNED = (
+            "RIDER_ASSIGNED",
+            "Rider Assigned",
+        )
+        RIDER_ACCEPTED = (
+            "RIDER_ACCEPTED",
+            "Rider Accepted",
+        )
         PICKED_UP = "PICKED_UP", "Picked Up"
         IN_TRANSIT = "IN_TRANSIT", "In Transit"
         DELIVERED = "DELIVERED", "Delivered"
         CANCELLED = "CANCELLED", "Cancelled"
         FAILED = "FAILED", "Failed"
 
+    # ==================================================
+    # Payment Status
+    # ==================================================
+
     class PaymentStatus(models.TextChoices):
         PENDING = "PENDING", "Pending"
         PAID = "PAID", "Paid"
         REFUNDED = "REFUNDED", "Refunded"
+
+    # ==================================================
+    # Identity
+    # ==================================================
 
     tracking_number = models.CharField(
         max_length=30,
@@ -36,11 +62,27 @@ class Delivery(TimeStampedModel):
         editable=False,
     )
 
+    # ==================================================
+    # Parties
+    # ==================================================
+
     customer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="deliveries",
     )
+
+    vendor = models.ForeignKey(
+        "vendors.VendorProfile",
+        on_delete=models.PROTECT,
+        related_name="deliveries",
+        null=True,
+        blank=True,
+    )
+
+    # ==================================================
+    # Delivery Type / Status
+    # ==================================================
 
     delivery_type = models.CharField(
         max_length=20,
@@ -51,18 +93,90 @@ class Delivery(TimeStampedModel):
         max_length=30,
         choices=DeliveryStatus.choices,
         default=DeliveryStatus.PENDING,
+        db_index=True,
     )
 
     payment_status = models.CharField(
         max_length=20,
         choices=PaymentStatus.choices,
         default=PaymentStatus.PENDING,
+        db_index=True,
     )
+
+    # ==================================================
+    # Pickup
+    # ==================================================
+    #
+    # These fields are a SNAPSHOT of the vendor's
+    # store location at the time the delivery is created.
+    #
+    # Do not allow the customer to arbitrarily provide
+    # the pickup location for vendor deliveries.
+    #
+
+    pickup_latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    pickup_longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    pickup_address = models.TextField()
+
+    # ==================================================
+    # Destination
+    # ==================================================
+
+    destination_latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    destination_longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+    )
+
+    destination_address = models.TextField()
+
+    # ==================================================
+    # Delivery Requirements
+    # ==================================================
+
+    vehicle_type = models.CharField(
+        max_length=20,
+        choices=RiderProfile.VehicleType.choices,
+        null=True,
+        blank=True,
+    )
+
+    package_weight = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+
+    package_size = models.CharField(
+        max_length=30,
+        blank=True,
+    )
+
+    # ==================================================
+    # Scheduling
+    # ==================================================
 
     scheduled_at = models.DateTimeField(
         null=True,
         blank=True,
     )
+
+    # ==================================================
+    # Pricing
+    # ==================================================
 
     estimated_price = models.DecimalField(
         max_digits=12,
@@ -80,48 +194,92 @@ class Delivery(TimeStampedModel):
         decimal_places=2,
         default=0,
     )
+
     distance_price = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     weight_price = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     surge_price = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     discount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     insurance_fee = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     service_fee = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
+
     total_price = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         default=0,
     )
 
-    notes = models.TextField(blank=True)
+    # ==================================================
+    # Notes
+    # ==================================================
+
+    notes = models.TextField(
+        blank=True,
+    )
+
+    # ==================================================
+    # Meta
+    # ==================================================
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        indexes = [
+            models.Index(
+                fields=["status"],
+            ),
+            models.Index(
+                fields=["payment_status"],
+            ),
+            models.Index(
+                fields=["vendor"],
+            ),
+            models.Index(
+                fields=["customer"],
+            ),
+        ]
+
+    # ==================================================
+    # String
+    # ==================================================
 
     def __str__(self):
         return self.tracking_number
 
+    # ==================================================
+    # Save
+    # ==================================================
+
     def save(self, *args, **kwargs):
+
         if not self.tracking_number:
             self.tracking_number = (
                 f"DLV-{uuid.uuid4().hex[:10].upper()}"
@@ -130,23 +288,32 @@ class Delivery(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-
 class DeliveryAssignment(TimeStampedModel):
     class AssignmentStatus(models.TextChoices):
         PENDING = "PENDING", "Pending"
         ASSIGNED = "ASSIGNED", "Assigned"
         ACCEPTED = "ACCEPTED", "Accepted"
+        EN_ROUTE_PICKUP = "EN_ROUTE_PICKUP", "En Route to Pickup"
+        ARRIVED_PICKUP = "ARRIVED_PICKUP", "Arrived at Pickup"
+        PICKED_UP = "PICKED_UP", "Picked Up"
+        OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY", "Out for Delivery"
+        ARRIVED_DESTINATION = (
+            "ARRIVED_DESTINATION",
+            "Arrived at Destination",
+        )
+        COMPLETED = "COMPLETED", "Completed"
         REJECTED = "REJECTED", "Rejected"
         CANCELLED = "CANCELLED", "Cancelled"
-        COMPLETED = "COMPLETED", "Completed"
 
     delivery = models.ForeignKey(
         Delivery,
         on_delete=models.CASCADE,
-        related_name="assignment",
+        related_name="assignments",
     )
 
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+    )
 
     rider = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -163,7 +330,7 @@ class DeliveryAssignment(TimeStampedModel):
     )
 
     status = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=AssignmentStatus.choices,
         default=AssignmentStatus.PENDING,
     )
@@ -187,7 +354,16 @@ class DeliveryAssignment(TimeStampedModel):
         blank=True,
     )
 
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
     rejection_reason = models.TextField(
+        blank=True,
+    )
+
+    cancellation_reason = models.TextField(
         blank=True,
     )
 
@@ -197,9 +373,23 @@ class DeliveryAssignment(TimeStampedModel):
 
     class Meta:
         ordering = ["-assigned_at"]
+
         indexes = [
-            models.Index(fields=["status"]),
-            models.Index(fields=["assigned_at"]),
+            models.Index(
+                fields=["delivery", "status"],
+            ),
+            models.Index(
+                fields=["rider", "status"],
+            ),
+            models.Index(
+                fields=["status"],
+            ),
+            models.Index(
+                fields=["assigned_at"],
+            ),
+            models.Index(
+                fields=["is_active"],
+            ),
         ]
 
     def __str__(self):
@@ -207,7 +397,6 @@ class DeliveryAssignment(TimeStampedModel):
             f"{self.delivery.tracking_number} "
             f"→ {self.rider.get_full_name() or self.rider.email}"
         )
-
 
 
 
@@ -457,9 +646,11 @@ class DispatchConfiguration(TimeStampedModel):
 
     Only one active configuration should exist.
     """
-# --------------------------------------------------
-# Dispatch Strategy
-# --------------------------------------------------
+
+    # ==================================================
+    # Dispatch Strategy
+    # ==================================================
+
     class DispatchStrategy(models.TextChoices):
         BALANCED = (
             "BALANCED",
@@ -496,6 +687,10 @@ class DispatchConfiguration(TimeStampedModel):
             "Express Delivery",
         )
 
+    # ==================================================
+    # Identity
+    # ==================================================
+
     name = models.CharField(
         max_length=100,
         unique=True,
@@ -506,14 +701,14 @@ class DispatchConfiguration(TimeStampedModel):
         choices=DispatchStrategy.choices,
         default=DispatchStrategy.BALANCED,
         help_text=(
-            "Determines how riders are "
-            "ranked during dispatch."
+            "Determines how riders are ranked "
+            "during dispatch."
         ),
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Search Radius
-    # --------------------------------------------------
+    # ==================================================
 
     initial_search_radius_km = models.DecimalField(
         max_digits=5,
@@ -533,9 +728,9 @@ class DispatchConfiguration(TimeStampedModel):
         default=2,
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Rider Response
-    # --------------------------------------------------
+    # ==================================================
 
     rider_response_timeout_seconds = (
         models.PositiveIntegerField(
@@ -553,9 +748,9 @@ class DispatchConfiguration(TimeStampedModel):
         default=True,
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Matching Rules
-    # --------------------------------------------------
+    # ==================================================
 
     minimum_rider_rating = models.DecimalField(
         max_digits=3,
@@ -569,9 +764,9 @@ class DispatchConfiguration(TimeStampedModel):
         )
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Dispatch Scoring Weights
-    # --------------------------------------------------
+    # ==================================================
 
     rating_weight = models.DecimalField(
         max_digits=6,
@@ -607,12 +802,14 @@ class DispatchConfiguration(TimeStampedModel):
         )
     )
 
-    cancellation_rate_weight = (
-        models.DecimalField(
-            max_digits=6,
-            decimal_places=2,
-            default=8,
-        )
+    cancellation_weight = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=8,
+        help_text=(
+            "Penalty applied to riders with "
+            "higher cancellation rates."
+        ),
     )
 
     experience_weight = models.DecimalField(
@@ -621,27 +818,23 @@ class DispatchConfiguration(TimeStampedModel):
         default=2,
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Dispatch Behaviour
-    # --------------------------------------------------
+    # ==================================================
 
-    dispatch_strategy = models.CharField(
-        max_length=30,
-        choices=DispatchStrategy.choices,
-        default=DispatchStrategy.BALANCED,
+    offer_batch_size = (
+        models.PositiveSmallIntegerField(
+            default=1,
+            help_text=(
+                "Number of riders offered "
+                "a delivery simultaneously."
+            ),
+        )
     )
 
-    offer_batch_size = models.PositiveSmallIntegerField(
-        default=1,
-        help_text=(
-            "Number of riders offered "
-            "a delivery simultaneously."
-        ),
-    )
-
-    # --------------------------------------------------
+    # ==================================================
     # Scheduling
-    # --------------------------------------------------
+    # ==================================================
 
     allow_scheduled_dispatch = (
         models.BooleanField(
@@ -655,25 +848,34 @@ class DispatchConfiguration(TimeStampedModel):
         )
     )
 
-    # --------------------------------------------------
+    # ==================================================
     # Status
-    # --------------------------------------------------
+    # ==================================================
 
     is_active = models.BooleanField(
         default=True,
     )
+
+    # ==================================================
+    # Meta
+    # ==================================================
 
     class Meta:
         ordering = (
             "-created_at",
         )
 
+    # ==================================================
+    # String Representation
+    # ==================================================
+
     def __str__(self):
         return self.name
-
+        
 
 
 class DeliveryOffer(TimeStampedModel):
+
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         ACCEPTED = "ACCEPTED", "Accepted"
@@ -681,63 +883,107 @@ class DeliveryOffer(TimeStampedModel):
         EXPIRED = "EXPIRED", "Expired"
         CANCELLED = "CANCELLED", "Cancelled"
 
+    # ==================================================
+    # Relationships
+    # ==================================================
+
     delivery = models.ForeignKey(
         "Delivery",
         on_delete=models.CASCADE,
         related_name="offers",
     )
+
     rider = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="delivery_offers",
     )
+
+    # ==================================================
+    # Offer State
+    # ==================================================
+
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
         default=Status.PENDING,
+        db_index=True,
     )
+
+    # ==================================================
+    # Dispatch Information
+    # ==================================================
+
     search_radius = models.DecimalField(
-        max_digits=5,
+        max_digits=6,
         decimal_places=2,
     )
+
+    # ==================================================
+    # Timestamps
+    # ==================================================
+
     offered_at = models.DateTimeField(
         auto_now_add=True,
     )
+
     responded_at = models.DateTimeField(
         null=True,
         blank=True,
     )
+
     expires_at = models.DateTimeField()
+
+    # ==================================================
+    # Response
+    # ==================================================
+
     rejection_reason = models.TextField(
         blank=True,
     )
+
+    # ==================================================
+    # Meta
+    # ==================================================
+
     class Meta:
         ordering = (
             "-offered_at",
         )
+
         indexes = [
             models.Index(
                 fields=[
                     "delivery",
                     "status",
-                ]
+                ],
             ),
             models.Index(
                 fields=[
                     "rider",
                     "status",
-                ]
+                ],
             ),
             models.Index(
                 fields=[
                     "expires_at",
-                ]
+                ],
             ),
         ]
+
+    # ==================================================
+    # String
+    # ==================================================
+
     def __str__(self):
+        rider_name = (
+            self.rider.get_full_name()
+            or self.rider.email
+        )
+
         return (
             f"{self.delivery.tracking_number} → "
-            f"{self.rider.get_full_name()}"
+            f"{rider_name}"
         )
 
 
@@ -894,3 +1140,174 @@ class AssignmentAction(models.TextChoices):
         "reassign",
         "Reassign",
     )
+
+
+
+
+class DispatchHistory(TimeStampedModel):
+    """
+    Immutable audit trail for the dispatch lifecycle.
+
+    Every important dispatch transition should create
+    one history record.
+    """
+
+    class EventType(models.TextChoices):
+        DELIVERY_CREATED = (
+            "DELIVERY_CREATED",
+            "Delivery Created",
+        )
+        DISPATCH_STARTED = (
+            "DISPATCH_STARTED",
+            "Dispatch Started",
+        )
+        OFFER_CREATED = (
+            "OFFER_CREATED",
+            "Offer Created",
+        )
+        OFFER_ACCEPTED = (
+            "OFFER_ACCEPTED",
+            "Offer Accepted",
+        )
+        OFFER_REJECTED = (
+            "OFFER_REJECTED",
+            "Offer Rejected",
+        )
+        OFFER_EXPIRED = (
+            "OFFER_EXPIRED",
+            "Offer Expired",
+        )
+        OFFER_CANCELLED = (
+            "OFFER_CANCELLED",
+            "Offer Cancelled",
+        )
+        RIDER_ASSIGNED = (
+            "RIDER_ASSIGNED",
+            "Rider Assigned",
+        )
+        ASSIGNMENT_ACCEPTED = (
+            "ASSIGNMENT_ACCEPTED",
+            "Assignment Accepted",
+        )
+        PICKUP_STARTED = (
+            "PICKUP_STARTED",
+            "Pickup Started",
+        )
+        ARRIVED_PICKUP = (
+            "ARRIVED_PICKUP",
+            "Arrived Pickup",
+        )
+        PICKUP_COMPLETED = (
+            "PICKUP_COMPLETED",
+            "Pickup Completed",
+        )
+        DELIVERY_STARTED = (
+            "DELIVERY_STARTED",
+            "Delivery Started",
+        )
+        ARRIVED_DESTINATION = (
+            "ARRIVED_DESTINATION",
+            "Arrived Destination",
+        )
+        DELIVERY_COMPLETED = (
+            "DELIVERY_COMPLETED",
+            "Delivery Completed",
+        )
+        ASSIGNMENT_CANCELLED = (
+            "ASSIGNMENT_CANCELLED",
+            "Assignment Cancelled",
+        )
+        ASSIGNMENT_REASSIGNED = (
+            "ASSIGNMENT_REASSIGNED",
+            "Assignment Reassigned",
+        )
+        DISPATCH_FAILED = (
+            "DISPATCH_FAILED",
+            "Dispatch Failed",
+        )
+
+    delivery = models.ForeignKey(
+        "deliveries.Delivery",
+        on_delete=models.CASCADE,
+        related_name="dispatch_history",
+    )
+
+    assignment = models.ForeignKey(
+        "deliveries.DeliveryAssignment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dispatch_history",
+    )
+
+    offer = models.ForeignKey(
+        "deliveries.DeliveryOffer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dispatch_history",
+    )
+
+    rider = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dispatch_history",
+    )
+
+    event_type = models.CharField(
+        max_length=50,
+        choices=EventType.choices,
+    )
+
+    status = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+    )
+
+    message = models.TextField(
+        blank=True,
+        default="",
+    )
+
+    reason = models.TextField(
+        blank=True,
+        default="",
+    )
+
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ("created_at",)
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "delivery",
+                    "created_at",
+                ]
+            ),
+            models.Index(
+                fields=[
+                    "event_type",
+                    "created_at",
+                ]
+            ),
+            models.Index(
+                fields=[
+                    "rider",
+                    "created_at",
+                ]
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.delivery} - "
+            f"{self.event_type}"
+        )

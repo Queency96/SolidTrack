@@ -1,26 +1,66 @@
 from deliveries.models import (
-    DeliveryTimeline,
+    DispatchHistory,
 )
 
 
 class DeliveryTimelineService:
-    @staticmethod
-    def log(
-        delivery,
-        event,
-        title,
-        description="",
-        rider=None,
-        created_by=None,
-        metadata=None,
-    ):
+    """
+    Read-only service for retrieving the chronological
+    dispatch timeline of a delivery.
+    """
 
-        return DeliveryTimeline.objects.create(
-            delivery=delivery,
-            rider=rider,
-            event=event,
-            title=title,
-            description=description,
-            created_by=created_by,
-            metadata=metadata or {},
+    @classmethod
+    def get_timeline(
+        cls,
+        delivery,
+    ):
+        history = (
+            DispatchHistory.objects
+            .filter(
+                delivery=delivery,
+            )
+            .select_related(
+                "rider",
+                "offer",
+                "assignment",
+            )
+            .order_by(
+                "created_at",
+            )
         )
+
+        return [
+            cls._serialize_event(event)
+            for event in history
+        ]
+
+    @staticmethod
+    def _serialize_event(
+        event,
+    ):
+        return {
+            "id": event.id,
+            "event_type": event.event_type,
+            "status": event.status,
+            "message": event.message,
+            "reason": event.reason,
+            "timestamp": event.created_at,
+
+            "delivery_id": (
+                event.delivery_id
+            ),
+
+            "offer_id": (
+                event.offer_id
+            ),
+
+            "assignment_id": (
+                event.assignment_id
+            ),
+
+            "rider_id": (
+                event.rider_id
+            ),
+
+            "metadata": event.metadata,
+        }

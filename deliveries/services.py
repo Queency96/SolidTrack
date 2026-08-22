@@ -12,21 +12,8 @@ import openrouteservice
 from django.conf import settings
 from django.core.cache import cache
 from .models import PricingConfiguration
-from decimal import Decimal
 from .distance_service import DistanceService
 from .pricing.calculator import PricingCalculator
-
-
-
-from django.db import transaction
-
-from deliveries.models import (
-    Delivery,
-    Package,
-    DeliveryAddress,
-)
-
-# from dispatch.coordinator import DispatchCoordinator
 from deliveries.dispatch.coordinator import DispatchCoordinator
 
 
