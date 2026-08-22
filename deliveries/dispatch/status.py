@@ -3,26 +3,44 @@ from django.db import models
 
 class DispatchStatus(models.TextChoices):
     """
-    Lifecycle of a dispatch operation.
+    Lifecycle state of a dispatch operation.
+
+    DispatchStatus represents the orchestration-level state
+    of dispatch.
+
+    It should NOT replace:
+
+        DeliveryOffer.Status
+
+    or:
+
+        DeliveryAssignment.AssignmentStatus
+
+    Those models own their respective persistent
+    lifecycles.
     """
 
-    # ------------------------------------------
+    # ==================================================
     # Initialization
-    # ------------------------------------------
+    # ==================================================
 
     CREATED = (
         "CREATED",
         "Created",
     )
 
+    # ==================================================
+    # Dispatch
+    # ==================================================
+
     DISPATCHING = (
         "DISPATCHING",
         "Dispatching",
     )
 
-    # ------------------------------------------
+    # ==================================================
     # Rider Search
-    # ------------------------------------------
+    # ==================================================
 
     SEARCHING = (
         "SEARCHING",
@@ -39,9 +57,9 @@ class DispatchStatus(models.TextChoices):
         "Riders Ranked",
     )
 
-    # ------------------------------------------
-    # Delivery Offer
-    # ------------------------------------------
+    # ==================================================
+    # Offer
+    # ==================================================
 
     OFFER_CREATED = (
         "OFFER_CREATED",
@@ -58,24 +76,28 @@ class DispatchStatus(models.TextChoices):
         "Waiting For Rider",
     )
 
+    # ==================================================
+    # Offer Response
+    # ==================================================
+
     ACCEPTED = (
         "ACCEPTED",
-        "Accepted",
+        "Offer Accepted",
     )
 
     REJECTED = (
         "REJECTED",
-        "Rejected",
+        "Offer Rejected",
     )
 
     EXPIRED = (
         "EXPIRED",
-        "Expired",
+        "Offer Expired",
     )
 
-    # ------------------------------------------
+    # ==================================================
     # Assignment
-    # ------------------------------------------
+    # ==================================================
 
     ASSIGNING = (
         "ASSIGNING",
@@ -84,24 +106,28 @@ class DispatchStatus(models.TextChoices):
 
     ASSIGNED = (
         "ASSIGNED",
-        "Assigned",
+        "Rider Assigned",
     )
 
-    # ------------------------------------------
+    # ==================================================
     # Completion
-    # ------------------------------------------
+    # ==================================================
 
     COMPLETED = (
         "COMPLETED",
-        "Completed",
+        "Dispatch Completed",
     )
+
+    # ==================================================
+    # Cancellation / Failure
+    # ==================================================
 
     CANCELLED = (
         "CANCELLED",
-        "Cancelled",
+        "Dispatch Cancelled",
     )
 
     FAILED = (
         "FAILED",
-        "Failed",
+        "Dispatch Failed",
     )

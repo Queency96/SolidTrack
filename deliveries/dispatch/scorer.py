@@ -1,5 +1,4 @@
-from decimal import Decimal
-
+from decimal import Decimal, InvalidOperation
 from .context import DispatchContext
 from .match import RiderMatch
 from .strategies.factory import DispatchStrategyFactory
@@ -16,15 +15,16 @@ class RiderScorer:
     ----------------
     • Resolve the configured dispatch strategy
     • Execute the strategy
-    • Store the resulting score on RiderMatch
+    • Normalize the resulting score
+    • Store the score on RiderMatch
 
     This class does NOT:
-    • Find riders
-    • Check rider eligibility
-    • Calculate distance
-    • Create offers
-    • Assign riders
-    • Notify riders/customers/vendors
+        • Find riders
+        • Check rider eligibility
+        • Calculate distance
+        • Create offers
+        • Assign riders
+        • Notify riders/customers/vendors
     """
 
     # ==================================================
@@ -40,20 +40,36 @@ class RiderScorer:
         """
         Calculate and store the dispatch score
         for a rider match.
+
+        Returns
+        -------
+        RiderMatch
+            The same match instance with its score set.
         """
 
-        # ------------------------------------------
+        # ----------------------------------------------
         # Validate context
-        # ------------------------------------------
+        # ----------------------------------------------
 
         if context is None:
             raise ValueError(
                 "Dispatch context is required."
             )
 
-        # ------------------------------------------
+        # ----------------------------------------------
+        # Validate configuration
+        # ----------------------------------------------
+
+        config = context.config
+
+        if config is None:
+            raise ValueError(
+                "Dispatch configuration is required."
+            )
+
+        # ----------------------------------------------
         # Validate match
-        # ------------------------------------------
+        # ----------------------------------------------
 
         if match is None:
             raise ValueError(
@@ -65,12 +81,12 @@ class RiderScorer:
                 "Rider match must contain a rider."
             )
 
-        # ------------------------------------------
-        # Resolve configured strategy
-        # ------------------------------------------
+        # ----------------------------------------------
+        # Resolve strategy
+        # ----------------------------------------------
 
         strategy_name = getattr(
-            context.config,
+            config,
             "dispatch_strategy",
             None,
         )
@@ -80,6 +96,10 @@ class RiderScorer:
                 "No dispatch strategy configured."
             )
 
+        # ----------------------------------------------
+        # Resolve strategy implementation
+        # ----------------------------------------------
+
         strategy = (
             DispatchStrategyFactory.get_strategy(
                 strategy_name,
@@ -88,39 +108,65 @@ class RiderScorer:
 
         if strategy is None:
             raise ValueError(
-                f"No dispatch strategy configured "
+                "No dispatch strategy configured "
                 f"for '{strategy_name}'."
             )
 
-        # ------------------------------------------
+        # ----------------------------------------------
         # Calculate score
-        # ------------------------------------------
+        # ----------------------------------------------
 
         score = strategy.score(
             context=context,
             match=match,
         )
 
-        # ------------------------------------------
-        # Normalize score
-        # ------------------------------------------
+        # ----------------------------------------------
+        # Validate returned score
+        # ----------------------------------------------
 
         if score is None:
             raise ValueError(
-                f"Dispatch strategy "
+                "Dispatch strategy "
                 f"'{strategy_name}' returned no score."
             )
 
-        score = Decimal(
-            str(score)
-        )
+        # ----------------------------------------------
+        # Normalize score
+        # ----------------------------------------------
 
-        # ------------------------------------------
+        try:
+            normalized_score = Decimal(
+                str(score)
+            )
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise ValueError(
+                "Dispatch strategy "
+                f"'{strategy_name}' returned an "
+                f"invalid score: {score!r}."
+            ) from exc
+
+        # ----------------------------------------------
+        # Validate score
+        # ----------------------------------------------
+
+        if normalized_score < 0:
+            raise ValueError(
+                "Dispatch strategy "
+                f"'{strategy_name}' returned a "
+                "negative score."
+            )
+
+        # ----------------------------------------------
         # Store score
-        # ------------------------------------------
+        # ----------------------------------------------
 
         match.set_score(
-            score,
+            normalized_score,
         )
 
         return match

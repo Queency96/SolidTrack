@@ -24,6 +24,7 @@ class DispatchContext:
     instance and updates it throughout the lifecycle.
 
     Persistent dispatch history remains stored in:
+
         • DeliveryOffer
         • DeliveryAssignment
         • Delivery
@@ -31,6 +32,9 @@ class DispatchContext:
 
     This context represents the in-memory state of one
     dispatch attempt.
+
+    Vendor priority is dispatch metadata and does NOT
+    require fields on VendorProfile.
     """
 
     # ==================================================
@@ -114,7 +118,7 @@ class DispatchContext:
     def __post_init__(self):
         """
         Populate related objects and normalize
-        dispatch exclusion state.
+        dispatch state.
         """
 
         # ----------------------------------------------
@@ -140,12 +144,14 @@ class DispatchContext:
             )
 
         # ----------------------------------------------
-        # Normalize excluded riders
+        # Vendor Dispatch Metadata
         # ----------------------------------------------
-        #
-        # Older callers may still provide exclusions
-        # through metadata. Merge them into the proper
-        # context field and then keep metadata synchronized.
+
+        self._initialize_vendor_metadata()
+
+        # ----------------------------------------------
+        # Excluded Riders
+        # ----------------------------------------------
 
         metadata_excluded = self.metadata.get(
             "excluded_rider_ids",
@@ -160,6 +166,98 @@ class DispatchContext:
         self._sync_excluded_riders()
 
     # ==================================================
+    # Vendor Metadata
+    # ==================================================
+
+    def _initialize_vendor_metadata(
+        self,
+    ):
+        """
+        Initialize vendor-related dispatch metadata.
+
+        VendorProfile does NOT need dispatch-priority
+        fields.
+
+        Priority values are supplied through metadata
+        by the dispatch pipeline.
+
+        Defaults:
+
+            vendor_priority = 0
+            vendor_priority_multiplier = 1
+        """
+
+        # ----------------------------------------------
+        # Vendor Priority
+        # ----------------------------------------------
+
+        if "vendor_priority" not in self.metadata:
+            self.metadata[
+                "vendor_priority"
+            ] = Decimal("0")
+
+        # ----------------------------------------------
+        # Vendor Priority Multiplier
+        # ----------------------------------------------
+
+        if (
+            "vendor_priority_multiplier"
+            not in self.metadata
+        ):
+            self.metadata[
+                "vendor_priority_multiplier"
+            ] = Decimal("1")
+
+        # ----------------------------------------------
+        # Normalize
+        # ----------------------------------------------
+
+        self.metadata[
+            "vendor_priority"
+        ] = self._to_decimal(
+            self.metadata.get(
+                "vendor_priority",
+                0,
+            ),
+            default=Decimal("0"),
+        )
+
+        self.metadata[
+            "vendor_priority_multiplier"
+        ] = self._to_decimal(
+            self.metadata.get(
+                "vendor_priority_multiplier",
+                1,
+            ),
+            default=Decimal("1"),
+        )
+
+        # ----------------------------------------------
+        # Safety bounds
+        # ----------------------------------------------
+
+        self.metadata[
+            "vendor_priority"
+        ] = max(
+            self.metadata[
+                "vendor_priority"
+            ],
+            Decimal("0"),
+        )
+
+        self.metadata[
+            "vendor_priority_multiplier"
+        ] = min(
+            max(
+                self.metadata[
+                    "vendor_priority_multiplier"
+                ],
+                Decimal("0"),
+            ),
+            Decimal("5"),
+        )
+
+    # ==================================================
     # State
     # ==================================================
 
@@ -167,10 +265,6 @@ class DispatchContext:
         self,
         status: DispatchStatus,
     ):
-        """
-        Update the current dispatch status.
-        """
-
         self.status = status
 
         return self
@@ -179,10 +273,6 @@ class DispatchContext:
         self,
         step: str,
     ):
-        """
-        Update the current dispatch workflow step.
-        """
-
         self.current_step = step
 
         return self
@@ -190,10 +280,6 @@ class DispatchContext:
     def increment_attempt(
         self,
     ):
-        """
-        Increment the dispatch attempt counter.
-        """
-
         self.attempt += 1
 
         return self
@@ -206,11 +292,6 @@ class DispatchContext:
         self,
         rider,
     ):
-        """
-        Exclude a rider from subsequent matching
-        attempts for this dispatch context.
-        """
-
         if rider is None:
             return self
 
@@ -228,14 +309,6 @@ class DispatchContext:
         self,
         rider_id,
     ):
-        """
-        Exclude a rider directly by ID.
-
-        The exclusion is stored in the dedicated
-        excluded_rider_ids collection and synchronized
-        to metadata for backward compatibility.
-        """
-
         if rider_id is None:
             return self
 
@@ -251,12 +324,7 @@ class DispatchContext:
         self,
         rider_ids,
     ):
-        """
-        Exclude multiple riders at once.
-        """
-
         if rider_ids:
-
             self.excluded_rider_ids.update(
                 rider_ids,
             )
@@ -269,11 +337,6 @@ class DispatchContext:
         self,
         rider,
     ):
-        """
-        Determine whether a rider has already been
-        excluded from this dispatch lifecycle.
-        """
-
         if rider is None:
             return False
 
@@ -291,14 +354,6 @@ class DispatchContext:
     def get_excluded_rider_ids(
         self,
     ):
-        """
-        Return a copy of the excluded rider IDs.
-
-        Returning a copy prevents callers from
-        accidentally mutating the context without
-        synchronization.
-        """
-
         return set(
             self.excluded_rider_ids,
         )
@@ -306,20 +361,11 @@ class DispatchContext:
     def _sync_excluded_riders(
         self,
     ):
-        """
-        Keep the legacy metadata representation
-        synchronized with the dedicated exclusion set.
-
-        New code should use:
-
-            context.excluded_rider_ids
-
-        instead of reading metadata directly.
-        """
-
         self.metadata[
             "excluded_rider_ids"
-        ] = self.excluded_rider_ids
+        ] = set(
+            self.excluded_rider_ids,
+        )
 
     # ==================================================
     # Metadata
@@ -333,10 +379,13 @@ class DispatchContext:
         """
         Add metadata to the dispatch context.
 
-        The excluded rider metadata key is handled
-        specially so the dedicated exclusion collection
-        remains the source of truth.
+        Vendor priority values are normalized when
+        stored.
         """
+
+        # ----------------------------------------------
+        # Excluded riders
+        # ----------------------------------------------
 
         if key == "excluded_rider_ids":
 
@@ -349,20 +398,80 @@ class DispatchContext:
 
             return self
 
+        # ----------------------------------------------
+        # Vendor priority
+        # ----------------------------------------------
+
+        if key == "vendor_priority":
+
+            value = self._to_decimal(
+                value,
+                default=Decimal("0"),
+            )
+
+            value = max(
+                value,
+                Decimal("0"),
+            )
+
+        # ----------------------------------------------
+        # Vendor multiplier
+        # ----------------------------------------------
+
+        elif key == "vendor_priority_multiplier":
+
+            value = self._to_decimal(
+                value,
+                default=Decimal("1"),
+            )
+
+            value = min(
+                max(
+                    value,
+                    Decimal("0"),
+                ),
+                Decimal("5"),
+            )
+
         self.metadata[key] = value
 
         return self
+
+    # ==================================================
+    # Metadata Retrieval
+    # ==================================================
 
     def get_metadata(
         self,
         key,
         default=None,
     ):
+        return self.metadata.get(
+            key,
+            default,
+        )
+
+    # ==================================================
+    # Dictionary-Style Metadata Access
+    # ==================================================
+
+    def get(
+        self,
+        key,
+        default=None,
+    ):
         """
-        Safely retrieve dispatch metadata.
+        Dictionary-style access to dispatch metadata.
+
+        Example:
+
+            context.get(
+                "vendor_priority",
+                0,
+            )
         """
 
-        return self.metadata.get(
+        return self.get_metadata(
             key,
             default,
         )
@@ -375,10 +484,6 @@ class DispatchContext:
         self,
         message,
     ):
-        """
-        Add a non-fatal warning.
-        """
-
         self.warnings.append(
             str(message),
         )
@@ -393,10 +498,6 @@ class DispatchContext:
         self,
         message,
     ):
-        """
-        Add an error message.
-        """
-
         self.errors.append(
             str(message),
         )
@@ -411,14 +512,6 @@ class DispatchContext:
         self,
         **kwargs,
     ):
-        """
-        Update multiple context attributes.
-
-        Special handling is applied to
-        excluded_rider_ids so the exclusion state
-        remains synchronized.
-        """
-
         for key, value in kwargs.items():
 
             if key == "excluded_rider_ids":
@@ -431,6 +524,44 @@ class DispatchContext:
 
                 continue
 
+            if key == "vendor_priority":
+
+                value = self._to_decimal(
+                    value,
+                    default=Decimal("0"),
+                )
+
+                self.metadata[
+                    key
+                ] = max(
+                    value,
+                    Decimal("0"),
+                )
+
+                continue
+
+            if (
+                key
+                == "vendor_priority_multiplier"
+            ):
+
+                value = self._to_decimal(
+                    value,
+                    default=Decimal("1"),
+                )
+
+                self.metadata[
+                    key
+                ] = min(
+                    max(
+                        value,
+                        Decimal("0"),
+                    ),
+                    Decimal("5"),
+                )
+
+                continue
+
             setattr(
                 self,
                 key,
@@ -440,8 +571,64 @@ class DispatchContext:
         return self
 
     # ==================================================
+    # Decimal Helper
+    # ==================================================
+
+    @staticmethod
+    def _to_decimal(
+        value,
+        default=Decimal("0"),
+    ) -> Decimal:
+        """
+        Safely convert a value to Decimal.
+        """
+
+        if value is None:
+            return default
+
+        try:
+            return Decimal(
+                str(value)
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return default
+
+    # ==================================================
     # Convenience Properties
     # ==================================================
+
+    @property
+    def vendor_priority(self) -> Decimal:
+        """
+        Current vendor dispatch priority.
+        """
+
+        return self._to_decimal(
+            self.metadata.get(
+                "vendor_priority",
+                0,
+            ),
+            default=Decimal("0"),
+        )
+
+    @property
+    def vendor_priority_multiplier(
+        self,
+    ) -> Decimal:
+        """
+        Current vendor priority multiplier.
+        """
+
+        return self._to_decimal(
+            self.metadata.get(
+                "vendor_priority_multiplier",
+                1,
+            ),
+            default=Decimal("1"),
+        )
 
     @property
     def has_matches(

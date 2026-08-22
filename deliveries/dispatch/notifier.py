@@ -1,3 +1,6 @@
+from django.db import transaction
+
+
 class DispatchNotifier:
     """
     Dispatch domain notification gateway.
@@ -10,14 +13,17 @@ class DispatchNotifier:
       dispatch domain.
 
     NotificationService is responsible for actually
-    delivering the notification through the configured
+    delivering notifications through the configured
     channels.
 
     This class does NOT:
-    • Create notifications directly.
-    • Send FCM requests directly.
-    • Send emails directly.
-    • Send SMS directly.
+        • Create notifications directly.
+        • Send FCM requests directly.
+        • Send emails directly.
+        • Send SMS directly.
+
+    Notification failures are intentionally isolated
+    from the dispatch lifecycle.
     """
 
     # ==================================================
@@ -32,10 +38,37 @@ class DispatchNotifier:
         """
         Notify a rider that a new delivery offer
         is available.
+
+        The offer must already exist in the database
+        before this method is called.
         """
 
-        cls._notify(
-            user=offer.rider,
+        if offer is None:
+            return
+
+        rider = getattr(
+            offer,
+            "rider",
+            None,
+        )
+
+        delivery = getattr(
+            offer,
+            "delivery",
+            None,
+        )
+
+        if rider is None or delivery is None:
+            return
+
+        expires_at = getattr(
+            offer,
+            "expires_at",
+            None,
+        )
+
+        cls._safe_notify(
+            user=rider,
             title="New Delivery Request",
             message=(
                 "You have a new delivery request "
@@ -45,11 +78,11 @@ class DispatchNotifier:
             data={
                 "offer_id": str(offer.id),
                 "delivery_id": str(
-                    offer.delivery.id
+                    delivery.id
                 ),
                 "expires_at": (
-                    offer.expires_at.isoformat()
-                    if offer.expires_at
+                    expires_at.isoformat()
+                    if expires_at
                     else None
                 ),
             },
@@ -69,10 +102,31 @@ class DispatchNotifier:
         """
         Notify the rider that the delivery has
         been assigned.
+
+        This notification should normally be triggered
+        after the assignment transaction commits.
         """
 
-        cls._notify(
-            user=assignment.rider,
+        if assignment is None:
+            return
+
+        rider = getattr(
+            assignment,
+            "rider",
+            None,
+        )
+
+        delivery = getattr(
+            assignment,
+            "delivery",
+            None,
+        )
+
+        if rider is None or delivery is None:
+            return
+
+        cls._safe_notify(
+            user=rider,
             title="Delivery Assigned",
             message=(
                 "A delivery has been assigned to you."
@@ -83,7 +137,7 @@ class DispatchNotifier:
                     assignment.id
                 ),
                 "delivery_id": str(
-                    assignment.delivery.id
+                    delivery.id
                 ),
             },
             send_push=True,
@@ -100,12 +154,28 @@ class DispatchNotifier:
         assignment,
     ):
         """
-        Notify the customer that a rider has
-        accepted their delivery.
+        Notify the customer that a rider has been
+        assigned to their delivery.
         """
 
-        delivery = assignment.delivery
-        rider = assignment.rider
+        if assignment is None:
+            return
+
+        delivery = getattr(
+            assignment,
+            "delivery",
+            None,
+        )
+
+        rider = getattr(
+            assignment,
+            "rider",
+            None,
+        )
+
+        if delivery is None or rider is None:
+            return
+
         customer = getattr(
             delivery,
             "customer",
@@ -120,16 +190,17 @@ class DispatchNotifier:
             or getattr(
                 rider,
                 "email",
-                "Your rider",
+                None,
             )
+            or "Your rider"
         )
 
-        cls._notify(
+        cls._safe_notify(
             user=customer,
             title="Rider Assigned",
             message=(
-                f"{rider_name} has accepted "
-                "your delivery request."
+                f"{rider_name} has been assigned "
+                "to your delivery."
             ),
             notification_type="DELIVERY",
             data={
@@ -161,7 +232,17 @@ class DispatchNotifier:
         assigned for pickup.
         """
 
-        delivery = assignment.delivery
+        if assignment is None:
+            return
+
+        delivery = getattr(
+            assignment,
+            "delivery",
+            None,
+        )
+
+        if delivery is None:
+            return
 
         vendor = getattr(
             delivery,
@@ -181,7 +262,7 @@ class DispatchNotifier:
         if vendor_user is None:
             return
 
-        cls._notify(
+        cls._safe_notify(
             user=vendor_user,
             title="Rider Assigned",
             message=(
@@ -211,34 +292,39 @@ class DispatchNotifier:
         offer,
     ):
         """
-        Notify the rider that the offer was rejected.
+        Notify internal/customer-facing systems that
+        an offer was rejected.
 
-        This can be useful for audit/confirmation,
-        although it is optional because the rider
-        initiated the rejection.
+        By default, the rider is NOT notified because
+        the rider initiated the rejection.
+
+        This method is retained as a domain hook for
+        future notification behavior.
         """
 
-        cls._notify(
-            user=offer.rider,
-            title="Delivery Rejected",
-            message=(
-                "You rejected this delivery request."
-            ),
-            notification_type="DELIVERY_OFFER",
-            data={
-                "offer_id": str(
-                    offer.id
-                ),
-                "delivery_id": str(
-                    offer.delivery.id
-                ),
-                "rejection_reason": (
-                    offer.rejection_reason
-                    or ""
-                ),
-            },
-            send_push=True,
+        if offer is None:
+            return
+
+        delivery = getattr(
+            offer,
+            "delivery",
+            None,
         )
+
+        if delivery is None:
+            return
+
+        # ----------------------------------------------
+        # Optional customer notification
+        # ----------------------------------------------
+        #
+        # We intentionally do not notify the rider here.
+        # The rider already knows they rejected the offer.
+        #
+        # Customer notification can be enabled later if
+        # product requirements call for it.
+
+        return
 
     # ==================================================
     # Offer Expired
@@ -254,8 +340,26 @@ class DispatchNotifier:
         expired.
         """
 
-        cls._notify(
-            user=offer.rider,
+        if offer is None:
+            return
+
+        rider = getattr(
+            offer,
+            "rider",
+            None,
+        )
+
+        delivery = getattr(
+            offer,
+            "delivery",
+            None,
+        )
+
+        if rider is None or delivery is None:
+            return
+
+        cls._safe_notify(
+            user=rider,
             title="Delivery Offer Expired",
             message=(
                 "This delivery offer expired before "
@@ -267,7 +371,7 @@ class DispatchNotifier:
                     offer.id
                 ),
                 "delivery_id": str(
-                    offer.delivery.id
+                    delivery.id
                 ),
             },
             send_push=True,
@@ -289,6 +393,9 @@ class DispatchNotifier:
         The delivery may still be retried automatically.
         """
 
+        if delivery is None:
+            return
+
         customer = getattr(
             delivery,
             "customer",
@@ -298,7 +405,7 @@ class DispatchNotifier:
         if customer is None:
             return
 
-        cls._notify(
+        cls._safe_notify(
             user=customer,
             title="Finding a Rider",
             message=(
@@ -330,6 +437,9 @@ class DispatchNotifier:
         been cancelled.
         """
 
+        if delivery is None:
+            return
+
         customer = getattr(
             delivery,
             "customer",
@@ -339,7 +449,7 @@ class DispatchNotifier:
         if customer is None:
             return
 
-        cls._notify(
+        cls._safe_notify(
             user=customer,
             title="Dispatch Cancelled",
             message=(
@@ -370,6 +480,9 @@ class DispatchNotifier:
         searching for another rider.
         """
 
+        if delivery is None:
+            return
+
         customer = getattr(
             delivery,
             "customer",
@@ -379,7 +492,7 @@ class DispatchNotifier:
         if customer is None:
             return
 
-        cls._notify(
+        cls._safe_notify(
             user=customer,
             title="Finding Another Rider",
             message=(
@@ -399,8 +512,9 @@ class DispatchNotifier:
     # Internal Notification Gateway
     # ==================================================
 
-    @staticmethod
+    @classmethod
     def _notify(
+        cls,
         *,
         user,
         title,
@@ -435,4 +549,86 @@ class DispatchNotifier:
             send_email=send_email,
             send_sms=send_sms,
             send_push=send_push,
+        )
+
+    # ==================================================
+    # Safe Notification
+    # ==================================================
+
+    @classmethod
+    def _safe_notify(
+        cls,
+        **kwargs,
+    ):
+        """
+        Execute a notification without allowing a
+        notification-channel failure to break the
+        dispatch workflow.
+
+        Dispatch state is already persisted independently
+        from notification delivery.
+        """
+
+        try:
+
+            cls._notify(
+                **kwargs,
+            )
+
+        except Exception:
+            # Notification failures must not invalidate
+            # a successful dispatch/assignment operation.
+            #
+            # The application's notification subsystem
+            # should perform its own logging/monitoring.
+            return
+
+    # ==================================================
+    # Assignment Notifications
+    # ==================================================
+
+    @classmethod
+    def schedule_assignment_notifications(
+        cls,
+        assignment,
+    ):
+        """
+        Schedule assignment notifications to execute
+        only after the surrounding database transaction
+        successfully commits.
+
+        This prevents users from receiving an assignment
+        notification for an assignment that was later
+        rolled back.
+        """
+
+        if assignment is None:
+            return
+
+        transaction.on_commit(
+            lambda: cls._send_assignment_notifications(
+                assignment,
+            )
+        )
+
+    @classmethod
+    def _send_assignment_notifications(
+        cls,
+        assignment,
+    ):
+        """
+        Send all notifications related to a successful
+        assignment.
+        """
+
+        cls.notify_rider(
+            assignment,
+        )
+
+        cls.notify_customer(
+            assignment,
+        )
+
+        cls.notify_vendor(
+            assignment,
         )

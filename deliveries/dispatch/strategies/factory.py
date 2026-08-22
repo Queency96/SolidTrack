@@ -1,14 +1,12 @@
 from deliveries.models import DispatchConfiguration
 
-from .balanced import (
-    BalancedDispatchStrategy,
-)
-from .nearest import (
-    NearestDispatchStrategy,
-)
-from .performance import (
-    PerformanceDispatchStrategy,
-)
+from .balanced import BalancedDispatchStrategy
+from .customer_priority import CustomerPriorityDispatchStrategy
+from .express import ExpressDispatchStrategy
+from .fair_distribution import FairDistributionDispatchStrategy
+from .nearest import NearestDispatchStrategy
+from .performance import PerformanceDispatchStrategy
+from .vendor_priority import VendorPriorityDispatchStrategy
 
 
 class DispatchStrategyFactory:
@@ -18,6 +16,16 @@ class DispatchStrategyFactory:
     The factory keeps strategy selection centralized so
     the rest of the dispatch system does not need to know
     which concrete strategy is being used.
+
+    Supported strategies
+    --------------------
+    • BALANCED
+    • NEAREST
+    • PERFORMANCE
+    • VENDOR_PRIORITY
+    • CUSTOMER_PRIORITY
+    • FAIR_DISTRIBUTION
+    • EXPRESS
     """
 
     # ==================================================
@@ -26,13 +34,25 @@ class DispatchStrategyFactory:
 
     STRATEGIES = {
         DispatchConfiguration.DispatchStrategy.BALANCED:
-            BalancedDispatchStrategy(),
+            BalancedDispatchStrategy,
 
         DispatchConfiguration.DispatchStrategy.NEAREST:
-            NearestDispatchStrategy(),
+            NearestDispatchStrategy,
 
         DispatchConfiguration.DispatchStrategy.PERFORMANCE:
-            PerformanceDispatchStrategy(),
+            PerformanceDispatchStrategy,
+
+        DispatchConfiguration.DispatchStrategy.VENDOR_PRIORITY:
+            VendorPriorityDispatchStrategy,
+
+        DispatchConfiguration.DispatchStrategy.CUSTOMER_PRIORITY:
+            CustomerPriorityDispatchStrategy,
+
+        DispatchConfiguration.DispatchStrategy.FAIR_DISTRIBUTION:
+            FairDistributionDispatchStrategy,
+
+        DispatchConfiguration.DispatchStrategy.EXPRESS:
+            ExpressDispatchStrategy,
     }
 
     # ==================================================
@@ -45,23 +65,85 @@ class DispatchStrategyFactory:
         strategy,
     ):
         """
-        Return the configured dispatch strategy.
+        Return an instantiated dispatch strategy.
 
-        Raises:
-            ValueError:
-                If the configured strategy is not registered.
+        Parameters
+        ----------
+        strategy : str
+            DispatchConfiguration.DispatchStrategy value.
+
+        Returns
+        -------
+        BaseDispatchStrategy
+            Instantiated strategy.
+
+        Raises
+        ------
+        ValueError
+            If no strategy was supplied or the strategy
+            is not registered.
         """
+
+        # ----------------------------------------------
+        # Validate strategy
+        # ----------------------------------------------
 
         if not strategy:
             raise ValueError(
                 "A dispatch strategy must be configured."
             )
 
-        try:
-            return cls.STRATEGIES[strategy]
+        # ----------------------------------------------
+        # Resolve strategy class
+        # ----------------------------------------------
 
-        except KeyError as exc:
+        strategy_class = cls.STRATEGIES.get(
+            strategy,
+        )
+
+        if strategy_class is None:
             raise ValueError(
-                f"Unsupported dispatch strategy: "
+                "Unsupported dispatch strategy: "
                 f"'{strategy}'."
-            ) from exc
+            )
+
+        # ----------------------------------------------
+        # Instantiate
+        # ----------------------------------------------
+
+        return strategy_class()
+
+    # ==================================================
+    # Check Strategy
+    # ==================================================
+
+    @classmethod
+    def is_supported(
+        cls,
+        strategy,
+    ) -> bool:
+        """
+        Determine whether a dispatch strategy is
+        registered.
+        """
+
+        if not strategy:
+            return False
+
+        return strategy in cls.STRATEGIES
+
+    # ==================================================
+    # Available Strategies
+    # ==================================================
+
+    @classmethod
+    def available_strategies(
+        cls,
+    ):
+        """
+        Return all registered dispatch strategy values.
+        """
+
+        return tuple(
+            cls.STRATEGIES.keys()
+        )
