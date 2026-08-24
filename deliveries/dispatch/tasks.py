@@ -1,5 +1,5 @@
 from celery import shared_task
-from deliveries.models import DeliveryOffer
+from deliveries.models.models import DeliveryOffer
 from .coordinator import DispatchCoordinator
 
 

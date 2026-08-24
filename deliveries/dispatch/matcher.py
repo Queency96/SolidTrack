@@ -1,7 +1,5 @@
 from decimal import Decimal
-
 from deliveries.distance_service import DistanceService
-
 from .eligibility import RiderEligibilityService
 from .match import RiderMatch
 

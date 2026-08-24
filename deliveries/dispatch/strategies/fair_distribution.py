@@ -9,23 +9,39 @@ class FairDistributionDispatchStrategy(
     """
     Fair-distribution dispatch strategy.
 
-    This strategy attempts to distribute delivery
-    opportunities fairly among eligible riders.
+    Designed to distribute delivery opportunities fairly
+    across eligible riders while still considering
+    operational suitability.
 
-    Priority
-    --------
-    1. Riders with fewer completed deliveries receive
-       a stronger opportunity bonus.
-    2. Riders with fewer recent/active jobs are preferred.
-    3. Riders with good acceptance and completion rates
-       remain favored.
-    4. Distance is still considered so fairness does
-       not result in unreasonable rider selection.
-    5. High cancellation rates are penalized.
-    6. Rider rating remains a quality safeguard.
+    Scoring priorities
+    ------------------
+    1. Fair workload distribution
+    2. Current active workload
+    3. Recent assignment count
+    4. Distance to pickup
+    5. Rider reliability
+    6. Acceptance rate
+    7. Completion rate
+    8. Rider rating
+    9. Rider experience
+    10. Cancellation penalty
 
-    The strategy uses the configured DispatchConfiguration
-    weights wherever possible.
+    The strategy uses DispatchContext metadata for
+    dispatch-attempt information that is not necessarily
+    persisted directly on RiderProfile.
+
+    Supported RiderMatch metadata:
+
+        recent_assignment_count
+
+    Supported DispatchContext metadata:
+
+        average_active_jobs
+        average_recent_assignments
+        fairness_workload_weight
+        fairness_recent_assignment_weight
+
+    Defaults are provided when these values are absent.
 
     Higher scores indicate better rider matches.
     """
@@ -40,17 +56,7 @@ class FairDistributionDispatchStrategy(
         match,
     ) -> Decimal:
         """
-        Calculate a fair-distribution score.
-
-        The key difference from other strategies is that
-        rider experience is treated as a balancing factor:
-
-            fewer completed deliveries
-                →
-            higher opportunity score
-
-        This prevents highly experienced riders from
-        receiving the majority of dispatch opportunities.
+        Calculate the fair-distribution dispatch score.
         """
 
         self.validate_inputs(
@@ -60,24 +66,30 @@ class FairDistributionDispatchStrategy(
 
         config = context.config
 
-        # ----------------------------------------------
-        # Rider metrics
-        # ----------------------------------------------
+        # ==================================================
+        # Rider Metrics
+        # ==================================================
 
         rating = self.decimal(
             match.rating,
         )
 
-        acceptance_rate = self._normalize_percentage(
-            match.acceptance_rate,
+        acceptance_rate = (
+            self._normalize_percentage(
+                match.acceptance_rate,
+            )
         )
 
-        completion_rate = self._normalize_percentage(
-            match.completion_rate,
+        completion_rate = (
+            self._normalize_percentage(
+                match.completion_rate,
+            )
         )
 
-        cancellation_rate = self._normalize_percentage(
-            match.cancellation_rate,
+        cancellation_rate = (
+            self._normalize_percentage(
+                match.cancellation_rate,
+            )
         )
 
         completed_deliveries = max(
@@ -101,9 +113,23 @@ class FairDistributionDispatchStrategy(
             Decimal("0"),
         )
 
-        # ----------------------------------------------
-        # Configuration weights
-        # ----------------------------------------------
+        # ==================================================
+        # Recent Assignment Count
+        # ==================================================
+
+        recent_assignments = max(
+            self.decimal(
+                match.get_metadata(
+                    "recent_assignment_count",
+                    0,
+                ),
+            ),
+            Decimal("0"),
+        )
+
+        # ==================================================
+        # Configuration Weights
+        # ==================================================
 
         rating_weight = self.decimal(
             config.rating_weight,
@@ -133,59 +159,93 @@ class FairDistributionDispatchStrategy(
             config.experience_weight,
         )
 
-        # ----------------------------------------------
-        # Rating
-        # ----------------------------------------------
+        # ==================================================
+        # Fairness Configuration
+        # ==================================================
 
-        rating_factor = min(
-            rating / Decimal("5"),
-            Decimal("1"),
+        fairness_workload_weight = (
+            self._get_fairness_weight(
+                context,
+                "fairness_workload_weight",
+                workload_weight,
+            )
         )
 
-        rating_score = (
-            rating_factor
-            * rating_weight
+        fairness_recent_weight = (
+            self._get_fairness_weight(
+                context,
+                "fairness_recent_assignment_weight",
+                workload_weight,
+            )
         )
 
-        # ----------------------------------------------
-        # Acceptance
-        # ----------------------------------------------
+        # ==================================================
+        # Workload Fairness
+        # ==================================================
+        #
+        # Lower workload should produce a higher score.
+        #
+        # Example:
+        #
+        # active_jobs = 0
+        #     factor = 1
+        #
+        # active_jobs = 1
+        #     factor = 0.5
+        #
+        # active_jobs = 2
+        #     factor = 0.33
 
-        acceptance_score = (
-            acceptance_rate
-            * acceptance_weight
+        average_active_jobs = (
+            self._get_context_decimal(
+                context,
+                "average_active_jobs",
+                Decimal("0"),
+            )
         )
 
-        # ----------------------------------------------
-        # Completion
-        # ----------------------------------------------
-
-        completion_score = (
-            completion_rate
-            * completion_weight
+        workload_factor = (
+            self._calculate_fairness_factor(
+                active_jobs,
+                average_active_jobs,
+            )
         )
 
-        # ----------------------------------------------
-        # Cancellation penalty
-        # ----------------------------------------------
-
-        cancellation_penalty = (
-            cancellation_rate
-            * cancellation_weight
+        workload_fairness_score = (
+            workload_factor
+            * fairness_workload_weight
         )
 
-        # ----------------------------------------------
+        # ==================================================
+        # Recent Assignment Fairness
+        # ==================================================
+        #
+        # Riders who have recently received more jobs
+        # should receive a lower score.
+
+        average_recent_assignments = (
+            self._get_context_decimal(
+                context,
+                "average_recent_assignments",
+                Decimal("0"),
+            )
+        )
+
+        recent_assignment_factor = (
+            self._calculate_fairness_factor(
+                recent_assignments,
+                average_recent_assignments,
+            )
+        )
+
+        recent_assignment_score = (
+            recent_assignment_factor
+            * fairness_recent_weight
+        )
+
+        # ==================================================
         # Distance
-        # ----------------------------------------------
-        #
-        # Closer riders still receive an advantage.
-        #
-        # 0 km → 1.0
-        # 1 km → 0.5
-        # 2 km → 0.333...
-        #
-        # This prevents distance from completely
-        # dominating fairness.
+        # ==================================================
 
         distance_factor = (
             Decimal("1")
@@ -200,97 +260,386 @@ class FairDistributionDispatchStrategy(
             * distance_weight
         )
 
-        # ----------------------------------------------
-        # Workload fairness
-        # ----------------------------------------------
-        #
-        # Riders carrying fewer active deliveries
-        # receive a higher score.
+        # ==================================================
+        # Rating
+        # ==================================================
 
-        workload_factor = (
-            Decimal("1")
+        rating_factor = min(
+            max(
+                rating / Decimal("5"),
+                Decimal("0"),
+            ),
+            Decimal("1"),
+        )
+
+        rating_score = (
+            rating_factor
+            * rating_weight
+        )
+
+        # ==================================================
+        # Acceptance Rate
+        # ==================================================
+
+        acceptance_score = (
+            acceptance_rate
+            * acceptance_weight
+        )
+
+        # ==================================================
+        # Completion Rate
+        # ==================================================
+
+        completion_score = (
+            completion_rate
+            * completion_weight
+        )
+
+        # ==================================================
+        # Cancellation Penalty
+        # ==================================================
+
+        cancellation_penalty = (
+            cancellation_rate
+            * cancellation_weight
+        )
+
+        # ==================================================
+        # Experience
+        # ==================================================
+
+        experience_factor = (
+            completed_deliveries
             / (
-                Decimal("1")
-                + active_jobs
+                completed_deliveries
+                + Decimal("100")
             )
         )
 
-        workload_score = (
-            workload_factor
-            * workload_weight
-        )
-
-        # ----------------------------------------------
-        # Fair opportunity score
-        # ----------------------------------------------
-        #
-        # Riders with fewer completed deliveries receive
-        # a larger opportunity bonus.
-        #
-        # Diminishing returns prevent a rider with zero
-        # deliveries from receiving an overwhelmingly
-        # large advantage.
-
-        opportunity_factor = (
-            Decimal("1")
-            / (
-                Decimal("1")
-                + completed_deliveries
-            )
-        )
-
-        opportunity_score = (
-            opportunity_factor
+        experience_score = (
+            experience_factor
             * experience_weight
         )
 
-        # ----------------------------------------------
-        # Fairness bonus
-        # ----------------------------------------------
-        #
-        # Give additional importance to riders who have
-        # relatively low experience while still requiring
-        # acceptable service quality.
-        #
-        # Poor completion/cancellation performance should
-        # not be rewarded merely because the rider has
-        # received fewer deliveries.
+        # ==================================================
+        # Reliability
+        # ==================================================
 
         reliability_factor = (
-            completion_rate
+            acceptance_rate
+            * completion_rate
             * (
                 Decimal("1")
                 - cancellation_rate
             )
         )
 
-        fairness_bonus = (
-            opportunity_factor
-            * reliability_factor
-            * experience_weight
+        reliability_score = (
+            reliability_factor
+            * (
+                acceptance_weight
+                + completion_weight
+            )
+            / Decimal("2")
         )
 
-        # ----------------------------------------------
-        # Final score
-        # ----------------------------------------------
+        # ==================================================
+        # Final Score
+        # ==================================================
 
         score = (
-            rating_score
+            workload_fairness_score
+            + recent_assignment_score
+            + distance_score
+            + rating_score
             + acceptance_score
             + completion_score
-            + distance_score
-            + workload_score
-            + opportunity_score
-            + fairness_bonus
+            + experience_score
+            + reliability_score
             - cancellation_penalty
         )
 
+        # ==================================================
+        # Scoring Metadata
+        # ==================================================
+
+        match.add_metadata(
+            "scoring_strategy",
+            "FAIR_DISTRIBUTION",
+        )
+
+        match.add_metadata(
+            "active_jobs",
+            active_jobs,
+        )
+
+        match.add_metadata(
+            "recent_assignment_count",
+            recent_assignments,
+        )
+
+        match.add_metadata(
+            "average_active_jobs",
+            average_active_jobs,
+        )
+
+        match.add_metadata(
+            "average_recent_assignments",
+            average_recent_assignments,
+        )
+
+        match.add_metadata(
+            "workload_fairness_score",
+            workload_fairness_score,
+        )
+
+        match.add_metadata(
+            "recent_assignment_score",
+            recent_assignment_score,
+        )
+
+        match.add_metadata(
+            "distance_score",
+            distance_score,
+        )
+
+        match.add_metadata(
+            "rating_score",
+            rating_score,
+        )
+
+        match.add_metadata(
+            "acceptance_score",
+            acceptance_score,
+        )
+
+        match.add_metadata(
+            "completion_score",
+            completion_score,
+        )
+
+        match.add_metadata(
+            "experience_score",
+            experience_score,
+        )
+
+        match.add_metadata(
+            "reliability_score",
+            reliability_score,
+        )
+
+        match.add_metadata(
+            "cancellation_penalty",
+            cancellation_penalty,
+        )
+
+        final_score = max(
+            score,
+            Decimal("0"),
+        )
+
+        match.add_metadata(
+            "final_score",
+            final_score,
+        )
+
+        return final_score
+
+    # ==================================================
+    # Fairness Factor
+    # ==================================================
+
+    @staticmethod
+    def _calculate_fairness_factor(
+        rider_value: Decimal,
+        average_value: Decimal,
+    ) -> Decimal:
+        """
+        Calculate a fairness factor.
+
+        A rider below the current average receives a
+        higher factor.
+
+        A rider above the average receives a lower
+        factor.
+
+        The result is clamped between 0 and 1.
+        """
+
+        rider_value = max(
+            rider_value,
+            Decimal("0"),
+        )
+
+        average_value = max(
+            average_value,
+            Decimal("0"),
+        )
+
         # ----------------------------------------------
-        # Prevent negative scores
+        # No population average
+        # ----------------------------------------------
+        #
+        # If there is no meaningful average yet,
+        # treat the rider as neutral.
+
+        if average_value <= 0:
+
+            if rider_value <= 0:
+                return Decimal("1")
+
+            return Decimal("0.5")
+
+        # ----------------------------------------------
+        # Rider below average
         # ----------------------------------------------
 
+        if rider_value < average_value:
+
+            factor = (
+                Decimal("1")
+                - (
+                    rider_value
+                    / (
+                        average_value
+                        + Decimal("1")
+                    )
+                )
+            )
+
+            return min(
+                max(
+                    factor,
+                    Decimal("0"),
+                ),
+                Decimal("1"),
+            )
+
+        # ----------------------------------------------
+        # Rider equal to average
+        # ----------------------------------------------
+
+        if rider_value == average_value:
+            return Decimal("0.5")
+
+        # ----------------------------------------------
+        # Rider above average
+        # ----------------------------------------------
+
+        excess = (
+            rider_value
+            - average_value
+        )
+
+        factor = (
+            Decimal("0.5")
+            / (
+                Decimal("1")
+                + excess
+            )
+        )
+
+        return min(
+            max(
+                factor,
+                Decimal("0"),
+            ),
+            Decimal("1"),
+        )
+
+    # ==================================================
+    # Context Decimal
+    # ==================================================
+
+    @staticmethod
+    def _get_context_decimal(
+        context,
+        key,
+        default=Decimal("0"),
+    ) -> Decimal:
+        """
+        Safely retrieve a Decimal value from
+        DispatchContext metadata.
+        """
+
+        value = None
+
+        # ----------------------------------------------
+        # Context metadata
+        # ----------------------------------------------
+
+        metadata = getattr(
+            context,
+            "metadata",
+            None,
+        )
+
+        if isinstance(metadata, dict):
+            value = metadata.get(
+                key,
+            )
+
+        # ----------------------------------------------
+        # Context getter
+        # ----------------------------------------------
+
+        if value is None and hasattr(
+            context,
+            "get",
+        ):
+            value = context.get(
+                key,
+                None,
+            )
+
+        # ----------------------------------------------
+        # Normalize
+        # ----------------------------------------------
+
+        if value is None:
+            return default
+
+        try:
+            return Decimal(
+                str(value)
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return default
+
+    # ==================================================
+    # Fairness Weight
+    # ==================================================
+
+    @staticmethod
+    def _get_fairness_weight(
+        context,
+        key,
+        default,
+    ) -> Decimal:
+        """
+        Resolve a fairness-specific scoring weight.
+
+        DispatchContext metadata can override the normal
+        workload weight without requiring new fields on
+        DispatchConfiguration.
+
+        Example:
+
+            fairness_workload_weight=10
+            fairness_recent_assignment_weight=8
+        """
+
+        value = FairDistributionDispatchStrategy._get_context_decimal(
+            context,
+            key,
+            default,
+        )
+
         return max(
-            score,
+            value,
             Decimal("0"),
         )
 
@@ -303,30 +652,40 @@ class FairDistributionDispatchStrategy(
         value,
     ) -> Decimal:
         """
-        Normalize a percentage/rate to 0–1.
+        Normalize percentage/rate values.
 
-        Supports both:
+        Supported:
 
-            0.95
-            95
+            0
+            0.75
+            1
+            75
+            100
 
-        Examples
-        --------
-        0.95 → 0.95
-        95   → 0.95
-        1    → 1
-        100  → 1
+        Results:
+
+            0
+            0.75
+            1
+            0.75
+            1
         """
 
-        value = Decimal(
-            str(value or 0)
-        )
+        try:
+            value = Decimal(
+                str(value or 0)
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return Decimal("0")
 
         if value <= 0:
             return Decimal("0")
 
         if value > 1:
-            value = value / Decimal("100")
+            value /= Decimal("100")
 
         return min(
             value,

@@ -1,5 +1,4 @@
 from decimal import Decimal
-
 from .base import BaseDispatchStrategy
 
 
@@ -11,12 +10,14 @@ class PerformanceDispatchStrategy(
 
     Prioritizes rider performance over proximity.
 
-    Positive factors:
+    Positive factors
+    ----------------
     • Rider rating
     • Completion rate
     • Acceptance rate
 
-    Negative factors:
+    Negative factors
+    ----------------
     • Cancellation rate
     • Active workload
     • Distance from pickup
@@ -24,9 +25,9 @@ class PerformanceDispatchStrategy(
     The actual weighting is controlled by
     DispatchConfiguration.
 
-    RiderMatch provides all normalized rider metrics,
-    so this strategy does not access the Django User
-    model directly.
+    RiderMatch provides normalized rider metrics,
+    so this strategy does not access Django models
+    directly.
     """
 
     # ==================================================
@@ -43,6 +44,11 @@ class PerformanceDispatchStrategy(
 
         Higher scores indicate better-performing riders.
         """
+
+        self.validate_inputs(
+            context=context,
+            match=match,
+        )
 
         config = context.config
 
@@ -110,8 +116,11 @@ class PerformanceDispatchStrategy(
         # ----------------------------------------------
 
         score -= (
-            match.distance_km
+            match.distance
             * config.distance_weight
         )
 
-        return score
+        return max(
+            score,
+            Decimal("0"),
+        )

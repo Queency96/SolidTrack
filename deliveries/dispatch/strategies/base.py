@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from ..context import DispatchContext
 from ..match import RiderMatch
@@ -9,14 +9,27 @@ class BaseDispatchStrategy(ABC):
     """
     Base interface for all dispatch strategies.
 
-    Every dispatch strategy must calculate a score for
-    a RiderMatch.
+    Every concrete dispatch strategy must calculate a
+    dispatch score for a RiderMatch.
 
     Higher scores indicate better rider matches.
 
-    Strategies operate on the normalized RiderMatch
-    interface and should not access Django models
-    directly for dispatch calculations.
+    Responsibilities
+    ----------------
+    • Define the strategy scoring contract
+    • Validate common strategy inputs
+    • Provide Decimal conversion helpers
+
+    This class does NOT:
+        • Find riders
+        • Check rider eligibility
+        • Calculate geographic distance
+        • Rank riders
+        • Create offers
+        • Assign riders
+        • Notify riders
+
+    Score normalization is handled by RiderScorer.
     """
 
     # ==================================================
@@ -35,28 +48,21 @@ class BaseDispatchStrategy(ABC):
         Parameters
         ----------
         context : DispatchContext
-            Current dispatch context containing the
-            delivery and dispatch configuration.
+            Current dispatch context.
 
         match : RiderMatch
-            Normalized dispatch-layer representation
-            of the rider.
+            RiderMatch being evaluated.
 
         Returns
         -------
         Decimal
-            Dispatch score.
-
-        Raises
-        ------
-        ValueError
-            If the context or match is invalid.
+            Calculated dispatch score.
 
         Notes
         -----
         Higher scores indicate better rider matches.
 
-        Concrete strategies should return a Decimal.
+        Concrete strategies should return Decimal.
         """
 
         raise NotImplementedError(
@@ -68,40 +74,74 @@ class BaseDispatchStrategy(ABC):
     # Validation
     # ==================================================
 
-    @staticmethod
+    @classmethod
     def validate_inputs(
+        cls,
         context: DispatchContext,
         match: RiderMatch,
     ):
         """
-        Validate common strategy inputs.
+        Validate the common inputs required by every
+        dispatch strategy.
 
-        Concrete strategies can call this method before
-        performing their scoring calculations.
+        Concrete strategies should normally call:
+
+            self.validate_inputs(
+                context=context,
+                match=match,
+            )
         """
+
+        # ----------------------------------------------
+        # Context
+        # ----------------------------------------------
 
         if context is None:
             raise ValueError(
                 "Dispatch context is required."
             )
 
+        # ----------------------------------------------
+        # Configuration
+        # ----------------------------------------------
+
         if context.config is None:
             raise ValueError(
                 "Dispatch configuration is required."
             )
+
+        # ----------------------------------------------
+        # Delivery
+        # ----------------------------------------------
+
+        if context.delivery is None:
+            raise ValueError(
+                "Dispatch context must contain "
+                "a delivery."
+            )
+
+        # ----------------------------------------------
+        # Match
+        # ----------------------------------------------
 
         if match is None:
             raise ValueError(
                 "Rider match is required."
             )
 
+        # ----------------------------------------------
+        # Rider
+        # ----------------------------------------------
+
         if match.rider is None:
             raise ValueError(
                 "Rider match must contain a rider."
             )
 
+        return True
+
     # ==================================================
-    # Decimal Helper
+    # Decimal Conversion
     # ==================================================
 
     @staticmethod
@@ -110,15 +150,65 @@ class BaseDispatchStrategy(ABC):
         default=Decimal("0"),
     ) -> Decimal:
         """
-        Safely convert a numeric value to Decimal.
+        Safely convert a value to Decimal.
 
-        This helper keeps scoring calculations
-        deterministic and avoids float arithmetic.
+        This helper prevents accidental float arithmetic
+        inside dispatch scoring calculations.
+
+        Invalid values return the supplied default.
         """
 
         if value is None:
             return default
 
-        return Decimal(
-            str(value)
+        if isinstance(
+            value,
+            Decimal,
+        ):
+            return value
+
+        try:
+
+            return Decimal(
+                str(value),
+            )
+
+        except (
+            TypeError,
+            ValueError,
+            InvalidOperation,
+        ):
+            return default
+
+    # ==================================================
+    # Non-Negative Decimal
+    # ==================================================
+
+    @classmethod
+    def non_negative_decimal(
+        cls,
+        value,
+        default=Decimal("0"),
+    ) -> Decimal:
+        """
+        Convert a value to Decimal and prevent negative
+        values.
+
+        Useful for scoring components such as:
+
+            • distance
+            • performance
+            • priority
+            • workload
+            • rating
+        """
+
+        value = cls.decimal(
+            value,
+            default=default,
+        )
+
+        return max(
+            value,
+            Decimal("0"),
         )

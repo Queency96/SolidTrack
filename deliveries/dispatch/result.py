@@ -1,12 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any
-
-from deliveries.models import (
-    Delivery,
-    DeliveryAssignment,
-    DeliveryOffer,
-)
-
+from deliveries.models.delivery import Delivery
+from deliveries.models.delivery_assignment import DeliveryAssignment
+from deliveries.models.delivery_offer import DeliveryOffer
 from .context import DispatchContext
 from .status import DispatchStatus
 
@@ -81,8 +77,6 @@ class DispatchResult:
     ):
         """
         Create a successful DispatchResult.
-
-        Any supplied warnings or errors are preserved.
         """
 
         return cls(
@@ -105,10 +99,6 @@ class DispatchResult:
     ):
         """
         Create a failed DispatchResult.
-
-        This is the canonical failure factory used by
-        DispatchEngine, DispatchPipeline, and
-        DispatchCoordinator.
         """
 
         return cls(
@@ -119,7 +109,7 @@ class DispatchResult:
         )
 
     # ==================================================
-    # Backward-Compatible Failure Alias
+    # Backward Compatibility
     # ==================================================
 
     @classmethod
@@ -144,87 +134,60 @@ class DispatchResult:
     # ==================================================
 
     @property
-    def has_errors(
-        self,
-    ):
+    def is_success(self):
         """
-        Return True when the result contains errors.
-        """
-
-        return bool(
-            self.errors,
-        )
-
-    @property
-    def has_warnings(
-        self,
-    ):
-        """
-        Return True when the result contains warnings.
-        """
-
-        return bool(
-            self.warnings,
-        )
-
-    @property
-    def has_delivery(
-        self,
-    ):
-        """
-        Return True when a delivery is attached.
-        """
-
-        return (
-            self.delivery
-            is not None
-        )
-
-    @property
-    def has_offer(
-        self,
-    ):
-        """
-        Return True when an offer is attached.
-        """
-
-        return (
-            self.offer
-            is not None
-        )
-
-    @property
-    def has_assignment(
-        self,
-    ):
-        """
-        Return True when an assignment is attached.
-        """
-
-        return (
-            self.assignment
-            is not None
-        )
-
-    @property
-    def is_success(
-        self,
-    ):
-        """
-        Alias for success.
+        Return True when the dispatch operation succeeded.
         """
 
         return self.success
 
     @property
-    def is_failure(
-        self,
-    ):
+    def is_failure(self):
         """
-        Return True when the operation failed.
+        Return True when the dispatch operation failed.
         """
 
         return not self.success
+
+    @property
+    def has_errors(self):
+        """
+        Return True when errors exist.
+        """
+
+        return bool(self.errors)
+
+    @property
+    def has_warnings(self):
+        """
+        Return True when warnings exist.
+        """
+
+        return bool(self.warnings)
+
+    @property
+    def has_delivery(self):
+        """
+        Return True when a delivery is attached.
+        """
+
+        return self.delivery is not None
+
+    @property
+    def has_offer(self):
+        """
+        Return True when an offer is attached.
+        """
+
+        return self.offer is not None
+
+    @property
+    def has_assignment(self):
+        """
+        Return True when an assignment is attached.
+        """
+
+        return self.assignment is not None
 
     # ==================================================
     # Warning Helpers
@@ -237,12 +200,19 @@ class DispatchResult:
         """
         Add a non-fatal warning.
 
-        Warnings do not change the success state.
+        Warnings do not automatically mark the result
+        as failed.
         """
 
-        self.warnings.append(
-            str(message),
-        )
+        if message is None:
+            return self
+
+        message = str(message)
+
+        if message not in self.warnings:
+            self.warnings.append(
+                message,
+            )
 
         return self
 
@@ -258,9 +228,15 @@ class DispatchResult:
         Add an error and mark the result as failed.
         """
 
-        self.errors.append(
-            str(message),
-        )
+        if message is None:
+            return self
+
+        message = str(message)
+
+        if message not in self.errors:
+            self.errors.append(
+                message,
+            )
 
         self.success = False
 
@@ -276,7 +252,7 @@ class DispatchResult:
         value,
     ):
         """
-        Add a value to the result data payload.
+        Add arbitrary data to the result.
         """
 
         self.data[key] = value
@@ -289,7 +265,7 @@ class DispatchResult:
         default=None,
     ):
         """
-        Safely retrieve a value from result data.
+        Safely retrieve data from the result.
         """
 
         return self.data.get(
@@ -308,10 +284,13 @@ class DispatchResult:
         """
         Merge another DispatchResult into this result.
 
-        Errors, warnings, and arbitrary data are merged.
+        The current result remains the primary result.
 
-        A failed result always causes the resulting
-        result to become unsuccessful.
+        Missing objects are populated from the other
+        result.
+
+        Errors and warnings are combined without
+        unnecessary duplicates.
         """
 
         if other is None:
@@ -327,20 +306,33 @@ class DispatchResult:
             )
 
         # ----------------------------------------------
+        # Success state
+        # ----------------------------------------------
+
+        if not other.success:
+            self.success = False
+
+        # ----------------------------------------------
         # Errors
         # ----------------------------------------------
 
-        self.errors.extend(
-            other.errors,
-        )
+        for error in other.errors:
+
+            if error not in self.errors:
+                self.errors.append(
+                    error,
+                )
 
         # ----------------------------------------------
         # Warnings
         # ----------------------------------------------
 
-        self.warnings.extend(
-            other.warnings,
-        )
+        for warning in other.warnings:
+
+            if warning not in self.warnings:
+                self.warnings.append(
+                    warning,
+                )
 
         # ----------------------------------------------
         # Data
@@ -351,14 +343,7 @@ class DispatchResult:
         )
 
         # ----------------------------------------------
-        # Success state
-        # ----------------------------------------------
-
-        if not other.success:
-            self.success = False
-
-        # ----------------------------------------------
-        # Preserve useful objects
+        # Context
         # ----------------------------------------------
 
         if (
@@ -367,11 +352,19 @@ class DispatchResult:
         ):
             self.context = other.context
 
+        # ----------------------------------------------
+        # Delivery
+        # ----------------------------------------------
+
         if (
             self.delivery is None
             and other.delivery is not None
         ):
             self.delivery = other.delivery
+
+        # ----------------------------------------------
+        # Offer
+        # ----------------------------------------------
 
         if (
             self.offer is None
@@ -379,13 +372,15 @@ class DispatchResult:
         ):
             self.offer = other.offer
 
+        # ----------------------------------------------
+        # Assignment
+        # ----------------------------------------------
+
         if (
             self.assignment is None
             and other.assignment is not None
         ):
-            self.assignment = (
-                other.assignment
-            )
+            self.assignment = other.assignment
 
         return self
 
@@ -397,41 +392,43 @@ class DispatchResult:
         self,
     ):
         """
-        Synchronize result information from the current
-        DispatchContext.
+        Synchronize the result with its DispatchContext.
 
-        This is useful when the pipeline has accumulated
-        warnings/errors after an intermediate result was
-        created.
+        This is particularly useful after the pipeline
+        has accumulated warnings or errors.
         """
 
         if self.context is None:
             return self
 
+        context = self.context
+
         # ----------------------------------------------
-        # Objects
+        # Delivery
         # ----------------------------------------------
 
         if self.delivery is None:
-            self.delivery = (
-                self.context.delivery
-            )
+            self.delivery = context.delivery
+
+        # ----------------------------------------------
+        # Offer
+        # ----------------------------------------------
 
         if self.offer is None:
-            self.offer = (
-                self.context.offer
-            )
+            self.offer = context.offer
+
+        # ----------------------------------------------
+        # Assignment
+        # ----------------------------------------------
 
         if self.assignment is None:
-            self.assignment = (
-                self.context.assignment
-            )
+            self.assignment = context.assignment
 
         # ----------------------------------------------
         # Warnings
         # ----------------------------------------------
 
-        for warning in self.context.warnings:
+        for warning in context.warnings:
 
             if warning not in self.warnings:
                 self.warnings.append(
@@ -442,7 +439,7 @@ class DispatchResult:
         # Errors
         # ----------------------------------------------
 
-        for error in self.context.errors:
+        for error in context.errors:
 
             if error not in self.errors:
                 self.errors.append(
@@ -459,6 +456,90 @@ class DispatchResult:
         return self
 
     # ==================================================
+    # Previous Offer Helpers
+    # ==================================================
+
+    @property
+    def previous_offer_id(self):
+        """
+        Return the ID of the previous offer when the
+        redispatch flow recorded one.
+        """
+
+        return self.get_data(
+            "previous_offer_id",
+        )
+
+    @property
+    def previous_offer_status(self):
+        """
+        Return the status of the previous offer when
+        recorded during redispatch.
+        """
+
+        return self.get_data(
+            "previous_offer_status",
+        )
+
+    # ==================================================
+    # Current Rider
+    # ==================================================
+
+    @property
+    def selected_rider(self):
+        """
+        Return the rider selected for the current
+        dispatch offer.
+        """
+
+        if self.context is None:
+            return None
+
+        return self.context.selected_rider
+
+    # ==================================================
+    # Search Information
+    # ==================================================
+
+    @property
+    def search_radius(self):
+        """
+        Return the search radius used by the current
+        dispatch attempt.
+        """
+
+        if self.context is None:
+            return None
+
+        return self.context.search_radius
+
+    @property
+    def match_count(self):
+        """
+        Return the number of current rider matches.
+        """
+
+        if self.context is None:
+            return 0
+
+        return len(
+            self.context.matches,
+        )
+
+    @property
+    def ranked_match_count(self):
+        """
+        Return the number of ranked rider matches.
+        """
+
+        if self.context is None:
+            return 0
+
+        return len(
+            self.context.ranked_matches,
+        )
+
+    # ==================================================
     # Serialization
     # ==================================================
 
@@ -469,20 +550,20 @@ class DispatchResult:
         Convert the result into a JSON-friendly
         dictionary.
 
-        Django model objects themselves are never returned
-        directly.
+        Django model instances are represented by IDs.
         """
+
+        status = self.status
+
+        if hasattr(
+            status,
+            "value",
+        ):
+            status = status.value
 
         payload = {
             "success": self.success,
-            "status": (
-                self.status.value
-                if hasattr(
-                    self.status,
-                    "value",
-                )
-                else str(self.status)
-            ),
+            "status": str(status),
             "message": self.message,
             "errors": list(
                 self.errors,
@@ -526,21 +607,60 @@ class DispatchResult:
             )
 
         # ----------------------------------------------
+        # Selected rider
+        # ----------------------------------------------
+
+        rider = self.selected_rider
+
+        if rider is not None:
+
+            payload["rider_id"] = rider.id
+
+        # ----------------------------------------------
+        # Previous offer
+        # ----------------------------------------------
+
+        previous_offer_id = (
+            self.previous_offer_id
+        )
+
+        if previous_offer_id is not None:
+
+            payload["previous_offer_id"] = (
+                previous_offer_id
+            )
+
+        previous_offer_status = (
+            self.previous_offer_status
+        )
+
+        if previous_offer_status is not None:
+
+            payload["previous_offer_status"] = (
+                previous_offer_status
+            )
+
+        # ----------------------------------------------
         # Dispatch context
         # ----------------------------------------------
 
         if self.context is not None:
 
+            context_status = (
+                self.context.status
+            )
+
+            if hasattr(
+                context_status,
+                "value",
+            ):
+                context_status = (
+                    context_status.value
+                )
+
             payload["dispatch"] = {
-                "status": (
-                    self.context.status.value
-                    if hasattr(
-                        self.context.status,
-                        "value",
-                    )
-                    else str(
-                        self.context.status
-                    )
+                "status": str(
+                    context_status,
                 ),
                 "current_step": (
                     self.context.current_step
@@ -552,12 +672,19 @@ class DispatchResult:
                     str(
                         self.context.search_radius
                     )
+                    if self.context.search_radius
+                    is not None
+                    else None
                 ),
-                "match_count": len(
-                    self.context.matches
+                "match_count": (
+                    len(
+                        self.context.matches,
+                    )
                 ),
-                "ranked_match_count": len(
-                    self.context.ranked_matches
+                "ranked_match_count": (
+                    len(
+                        self.context.ranked_matches,
+                    )
                 ),
                 "excluded_rider_count": (
                     self.context
@@ -568,7 +695,7 @@ class DispatchResult:
         return payload
 
     # ==================================================
-    # Representation
+    # Boolean Representation
     # ==================================================
 
     def __bool__(

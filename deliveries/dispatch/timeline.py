@@ -1,6 +1,7 @@
-from deliveries.models import (
+from deliveries.models.dispatch_history import (
     DispatchHistory,
 )
+
 
 
 class DeliveryTimelineService:

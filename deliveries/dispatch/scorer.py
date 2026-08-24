@@ -6,29 +6,31 @@ from .strategies.factory import DispatchStrategyFactory
 
 class RiderScorer:
     """
-    Calculates the dispatch score for a rider.
-
-    The actual scoring algorithm is delegated to the
-    configured dispatch strategy.
+    Calculates the dispatch score for a rider match.
 
     Responsibilities
     ----------------
+    • Validate the dispatch context
+    • Validate the rider match
     • Resolve the configured dispatch strategy
     • Execute the strategy
-    • Normalize the resulting score
-    • Store the score on RiderMatch
+    • Normalize the returned score
+    • Store the raw score
+    • Store the normalized score on RiderMatch
+    • Store scoring metadata
 
     This class does NOT:
         • Find riders
         • Check rider eligibility
-        • Calculate distance
+        • Calculate geographic distance
+        • Rank riders
         • Create offers
         • Assign riders
-        • Notify riders/customers/vendors
+        • Notify users
     """
 
     # ==================================================
-    # Score Rider
+    # Score
     # ==================================================
 
     @classmethod
@@ -38,38 +40,162 @@ class RiderScorer:
         match: RiderMatch,
     ) -> RiderMatch:
         """
-        Calculate and store the dispatch score
-        for a rider match.
+        Calculate and store the dispatch score.
+
+        Parameters
+        ----------
+        context : DispatchContext
+            Current dispatch context.
+
+        match : RiderMatch
+            Rider match being scored.
 
         Returns
         -------
         RiderMatch
-            The same match instance with its score set.
+            The same match with its score populated.
+
+        Raises
+        ------
+        ValueError
+            If the context, configuration, match,
+            strategy, or calculated score is invalid.
         """
 
         # ----------------------------------------------
         # Validate context
         # ----------------------------------------------
 
+        cls._validate_context(
+            context,
+        )
+
+        # ----------------------------------------------
+        # Validate match
+        # ----------------------------------------------
+
+        cls._validate_match(
+            match,
+        )
+
+        # ----------------------------------------------
+        # Resolve strategy
+        # ----------------------------------------------
+
+        strategy_name = (
+            context.config.dispatch_strategy
+        )
+
+        if not strategy_name:
+            raise ValueError(
+                "Dispatch strategy is required."
+            )
+
+        try:
+
+            strategy = (
+                DispatchStrategyFactory.get_strategy(
+                    strategy_name,
+                )
+            )
+
+        except Exception as exc:
+
+            raise ValueError(
+                "Unable to resolve dispatch strategy "
+                f"'{strategy_name}'."
+            ) from exc
+
+        if strategy is None:
+            raise ValueError(
+                "Dispatch strategy "
+                f"'{strategy_name}' could not be resolved."
+            )
+
+        # ----------------------------------------------
+        # Calculate raw score
+        # ----------------------------------------------
+
+        raw_score = strategy.score(
+            context=context,
+            match=match,
+        )
+
+        # ----------------------------------------------
+        # Normalize score
+        # ----------------------------------------------
+
+        normalized_score = (
+            cls._normalize_score(
+                score=raw_score,
+                strategy_name=strategy_name,
+            )
+        )
+
+        # ----------------------------------------------
+        # Store scoring metadata
+        # ----------------------------------------------
+
+        match.add_metadata(
+            "dispatch_strategy",
+            strategy_name,
+        )
+
+        match.add_metadata(
+            "raw_score",
+            normalized_score,
+        )
+
+        # ----------------------------------------------
+        # Store final score
+        # ----------------------------------------------
+
+        match.set_score(
+            normalized_score,
+        )
+
+        return match
+
+    # ==================================================
+    # Validate Context
+    # ==================================================
+
+    @staticmethod
+    def _validate_context(
+        context: DispatchContext,
+    ):
+        """
+        Validate the dispatch context required
+        for scoring.
+        """
+
         if context is None:
             raise ValueError(
                 "Dispatch context is required."
             )
 
-        # ----------------------------------------------
-        # Validate configuration
-        # ----------------------------------------------
-
-        config = context.config
-
-        if config is None:
+        if context.config is None:
             raise ValueError(
                 "Dispatch configuration is required."
             )
 
-        # ----------------------------------------------
-        # Validate match
-        # ----------------------------------------------
+        if context.delivery is None:
+            raise ValueError(
+                "Dispatch context must contain "
+                "a delivery."
+            )
+
+    # ==================================================
+    # Validate Match
+    # ==================================================
+
+    @staticmethod
+    def _validate_match(
+        match: RiderMatch,
+    ):
+        """
+        Validate the RiderMatch before scoring.
+        """
 
         if match is None:
             raise ValueError(
@@ -81,49 +207,26 @@ class RiderScorer:
                 "Rider match must contain a rider."
             )
 
-        # ----------------------------------------------
-        # Resolve strategy
-        # ----------------------------------------------
+    # ==================================================
+    # Normalize Score
+    # ==================================================
 
-        strategy_name = getattr(
-            config,
-            "dispatch_strategy",
-            None,
-        )
+    @staticmethod
+    def _normalize_score(
+        score,
+        strategy_name,
+    ) -> Decimal:
+        """
+        Normalize a strategy score to Decimal.
 
-        if not strategy_name:
-            raise ValueError(
-                "No dispatch strategy configured."
-            )
-
-        # ----------------------------------------------
-        # Resolve strategy implementation
-        # ----------------------------------------------
-
-        strategy = (
-            DispatchStrategyFactory.get_strategy(
-                strategy_name,
-            )
-        )
-
-        if strategy is None:
-            raise ValueError(
-                "No dispatch strategy configured "
-                f"for '{strategy_name}'."
-            )
-
-        # ----------------------------------------------
-        # Calculate score
-        # ----------------------------------------------
-
-        score = strategy.score(
-            context=context,
-            match=match,
-        )
-
-        # ----------------------------------------------
-        # Validate returned score
-        # ----------------------------------------------
+        Rules
+        -----
+        • None is invalid.
+        • Invalid numeric values are rejected.
+        • Negative scores become zero.
+        • Positive infinity is rejected.
+        • Negative infinity is rejected.
+        """
 
         if score is None:
             raise ValueError(
@@ -131,42 +234,40 @@ class RiderScorer:
                 f"'{strategy_name}' returned no score."
             )
 
-        # ----------------------------------------------
-        # Normalize score
-        # ----------------------------------------------
-
         try:
-            normalized_score = Decimal(
-                str(score)
+
+            normalized = Decimal(
+                str(score),
             )
+
         except (
             InvalidOperation,
             TypeError,
             ValueError,
         ) as exc:
+
             raise ValueError(
                 "Dispatch strategy "
-                f"'{strategy_name}' returned an "
-                f"invalid score: {score!r}."
+                f"'{strategy_name}' returned "
+                f"an invalid score: {score!r}."
             ) from exc
 
         # ----------------------------------------------
-        # Validate score
+        # Reject non-finite values
         # ----------------------------------------------
 
-        if normalized_score < 0:
+        if not normalized.is_finite():
             raise ValueError(
                 "Dispatch strategy "
-                f"'{strategy_name}' returned a "
-                "negative score."
+                f"'{strategy_name}' returned "
+                f"a non-finite score: {score!r}."
             )
 
         # ----------------------------------------------
-        # Store score
+        # Prevent negative dispatch scores
         # ----------------------------------------------
 
-        match.set_score(
-            normalized_score,
+        return max(
+            normalized,
+            Decimal("0"),
         )
-
-        return match

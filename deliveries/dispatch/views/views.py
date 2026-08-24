@@ -5,7 +5,7 @@ from rest_framework.permissions import (
     IsAuthenticated,
     IsAdminUser,
 )
-from deliveries.models import (
+from deliveries.models.models import (
     Delivery,
     DeliveryAssignment,
     DeliveryOffer,

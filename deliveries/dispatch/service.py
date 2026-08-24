@@ -1,6 +1,6 @@
 from django.core.cache import cache
 
-from deliveries.models import DispatchConfiguration
+from deliveries.models.models import DispatchConfiguration
 
 from .exceptions import DispatchConfigurationError
 

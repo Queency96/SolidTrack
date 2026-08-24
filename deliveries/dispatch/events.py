@@ -1,10 +1,7 @@
 from dataclasses import dataclass
-
-from deliveries.models import (
-    Delivery,
-    DeliveryAssignment,
-    DeliveryOffer,
-)
+from deliveries.models.delivery_offer import DeliveryOffer
+from deliveries.models.delivery_assignment import DeliveryAssignment
+from deliveries.models.delivery import Delivery
 
 
 @dataclass(frozen=True)

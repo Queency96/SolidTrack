@@ -2,6 +2,7 @@ from django.db import models
 from django.conf import settings
 from common.models import TimeStampedModel
 import uuid
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 

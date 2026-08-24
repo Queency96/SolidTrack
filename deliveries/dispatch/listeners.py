@@ -2,8 +2,8 @@ from .events import (
     DeliveryOfferAcceptedEvent,
     DeliveryOfferRejectedEvent,
 )
+from deliveries.models.delivery_timeline import DeliveryTimeline
 from .notifier import DispatchNotifier
-from deliveries.models import DeliveryTimeline
 from .timeline import (
     DeliveryTimelineService,
 )

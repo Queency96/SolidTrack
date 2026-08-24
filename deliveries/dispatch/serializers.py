@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from deliveries.constants import DeliveryOfferAction
-from deliveries.models import (
+from deliveries.models.models import (
     DeliveryAssignment,
     DeliveryOffer,
     DispatchConfiguration,

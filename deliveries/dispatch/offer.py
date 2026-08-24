@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from deliveries.models import (
+from deliveries.models.models import (
     Delivery,
     DeliveryOffer,
 )
