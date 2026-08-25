@@ -5,6 +5,9 @@ from .product import Product
 from .product_image import ProductImage
 from .product_variant import ProductVariant
 from .store_operating_hour import StoreOperatingHour
+from .product_option import ProductOption
+from .product_option_value import ProductOptionValue 
+
 
 
 __all__ = [
@@ -15,4 +18,7 @@ __all__ = [
     "ProductImage",
     "ProductVariant",
     "StoreOperatingHour",
+    'ProductOption',
+    'ProductVariantOptionValue',
+    'ProductOptionValue',
 ]

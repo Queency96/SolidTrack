@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
+from cloudinary.models import CloudinaryField
 
 
 class ProductImage(models.Model):
@@ -35,8 +36,10 @@ class ProductImage(models.Model):
     # Image
     # ==================================================
 
-    image = models.ImageField(
-        upload_to="vendors/products/images/",
+    image = CloudinaryField(
+        "image",
+        blank=True,
+        null=True,
     )
 
     # ==================================================
@@ -179,32 +182,32 @@ class ProductImage(models.Model):
     # ==================================================
     # Primary Image Helper
     # ==================================================
-
     def make_primary(self):
         """
-        Make this image the primary image for
-        its product.
+        Make this image the primary image for its product.
 
-        The database constraint guarantees that
-        only one active primary image exists.
+        Any existing primary image for the same product
+        is automatically demoted.
         """
 
-        ProductImage.objects.filter(
-            product=self.product,
-            is_primary=True,
-        ).exclude(
-            pk=self.pk,
-        ).update(
-            is_primary=False,
-        )
+        with transaction.atomic():
 
-        self.is_primary = True
+            ProductImage.objects.filter(
+                product=self.product,
+                is_primary=True,
+            ).exclude(
+                pk=self.pk,
+            ).update(
+                is_primary=False,
+            )
 
-        self.save(
-            update_fields=[
-                "is_primary",
-                "updated_at",
-            ],
-        )
+            self.is_primary = True
+
+            self.save(
+                update_fields=[
+                    "is_primary",
+                    "updated_at",
+                ],
+            )
 
         return self
