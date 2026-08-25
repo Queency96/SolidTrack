@@ -14,7 +14,7 @@ urlpatterns = [
     # ==================================================
 
     path(
-        "",
+        "categories/",
         PublicProductCategoryListView.as_view(),
         name="category-list",
     ),

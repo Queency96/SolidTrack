@@ -7,7 +7,8 @@ from .product_variant import ProductVariant
 from .store_operating_hour import StoreOperatingHour
 from .product_option import ProductOption
 from .product_option_value import ProductOptionValue 
-
+from .product_variant_image import ProductVariantImage
+from .product_variant_option_value import ProductVariantOptionValue
 
 
 __all__ = [
@@ -21,4 +22,6 @@ __all__ = [
     'ProductOption',
     'ProductVariantOptionValue',
     'ProductOptionValue',
+    'ProductVariantImage',
+    'ProductVariantOptionValue'
 ]
