@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+from cloudinary.models import CloudinaryField
 
 
 class ProductCategory(models.Model):
@@ -68,10 +69,10 @@ class ProductCategory(models.Model):
     # Display
     # ==================================================
 
-    image = models.ImageField(
-        upload_to="product_categories/",
-        null=True,
+    image = CloudinaryField(
+        "image",
         blank=True,
+        null=True,
     )
 
     sort_order = models.PositiveIntegerField(

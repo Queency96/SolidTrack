@@ -6,9 +6,7 @@ from rest_framework.filters import (
     SearchFilter,
     OrderingFilter,
 )
-
 from ..models import ProductCategory
-
 from ..serializers.product_category import (
     ProductCategorySerializer,
     PublicProductCategorySerializer,

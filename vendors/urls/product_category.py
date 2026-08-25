@@ -20,7 +20,7 @@ urlpatterns = [
     ),
 
     path(
-        "detail/<slug:slug>/",
+        "categories/detail/<slug:slug>/",
         PublicProductCategoryDetailView.as_view(),
         name="category-detail",
     ),
@@ -30,13 +30,13 @@ urlpatterns = [
     # ==================================================
 
     path(
-        "admin/",
+        "categories/admin/",
         AdminProductCategoryListCreateView.as_view(),
         name="admin-category-list-create",
     ),
 
     path(
-        "admin/<int:pk>/",
+        "/categories/admin/<int:pk>/",
         AdminProductCategoryDetailView.as_view(),
         name="admin-category-detail",
     ),
