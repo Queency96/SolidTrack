@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from cloudinary.models import CloudinaryField
+import uuid
 
 
 class ProductImage(models.Model):
@@ -22,6 +23,12 @@ class ProductImage(models.Model):
     product thumbnail throughout the marketplace.
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Product
     # ==================================================

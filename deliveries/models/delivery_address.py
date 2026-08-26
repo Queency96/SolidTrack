@@ -1,11 +1,17 @@
 from django.db import models
 from common.models import TimeStampedModel
 from deliveries.models.delivery import Delivery
+import uuid
 
 
 
 
 class DeliveryAddress(TimeStampedModel):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
     class AddressType(models.TextChoices):
         PICKUP = "PICKUP", "Pickup"
         DELIVERY = "DELIVERY", "Delivery"
@@ -51,6 +57,11 @@ class DeliveryAddress(TimeStampedModel):
 
 
 class Package(TimeStampedModel):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
     class PackageSize(models.TextChoices):
         SMALL = "SMALL", "Small"
         MEDIUM = "MEDIUM", "Medium"

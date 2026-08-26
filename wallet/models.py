@@ -2,10 +2,16 @@ from decimal import Decimal
 from django.db import models
 from django.conf import settings
 from common.models import TimeStampedModel
+import uuid
 
 
 class Wallet(TimeStampedModel):
-
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,

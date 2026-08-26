@@ -5,6 +5,8 @@ from django.db import models
 from common.models import TimeStampedModel
 from decimal import Decimal
 from riders.models import RiderProfile
+import uuid
+
 
 class DeliveryOffer(TimeStampedModel):
 
@@ -15,6 +17,12 @@ class DeliveryOffer(TimeStampedModel):
         EXPIRED = "EXPIRED", "Expired"
         CANCELLED = "CANCELLED", "Cancelled"
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Relationships
     # ==================================================

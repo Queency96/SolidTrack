@@ -5,6 +5,7 @@ from django.db import models
 from common.models import TimeStampedModel
 from decimal import Decimal
 from riders.models import RiderProfile
+import uuid
 
 
 
@@ -65,6 +66,12 @@ class Delivery(TimeStampedModel):
             "Failed",
         )
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Payment Status
     # ==================================================

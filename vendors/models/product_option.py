@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.text import slugify
+import uuid
 
 
 class ProductOption(models.Model):
@@ -25,6 +26,12 @@ class ProductOption(models.Model):
             └── Size
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Product
     # ==================================================

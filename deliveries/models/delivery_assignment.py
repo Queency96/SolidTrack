@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 from common.models import TimeStampedModel
 from .delivery import Delivery
-
+import uuid
 
 class DeliveryAssignment(TimeStampedModel):
     class AssignmentStatus(models.TextChoices):
@@ -20,6 +20,12 @@ class DeliveryAssignment(TimeStampedModel):
         COMPLETED = "COMPLETED", "Completed"
         REJECTED = "REJECTED", "Rejected"
         CANCELLED = "CANCELLED", "Cancelled"
+    
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     delivery = models.ForeignKey(
         Delivery,

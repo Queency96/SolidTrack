@@ -1,7 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 from cloudinary.models import CloudinaryField
-
+import uuid
 
 
 
@@ -34,6 +34,12 @@ class ProductVariantImage(models.Model):
     to a particular variant.
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Variant
     # ==================================================

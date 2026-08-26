@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 from cloudinary.models import CloudinaryField
+import uuid
 
 
 class ProductCategory(models.Model):
@@ -30,6 +31,12 @@ class ProductCategory(models.Model):
     Categories belong to the platform rather than to an
     individual vendor.
     """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     # ==================================================
     # Identity

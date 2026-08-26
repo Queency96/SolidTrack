@@ -1,5 +1,5 @@
 from decimal import Decimal
-
+import uuid
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -18,6 +18,12 @@ class Product(models.Model):
     system.
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Vendor
     # ==================================================

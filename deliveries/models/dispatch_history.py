@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 from common.models import TimeStampedModel
-
+import uuid
 
 class DispatchHistory(TimeStampedModel):
     """
@@ -84,6 +84,12 @@ class DispatchHistory(TimeStampedModel):
             "DISPATCH_FAILED",
             "Dispatch Failed",
         )
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     delivery = models.ForeignKey(
         "deliveries.Delivery",

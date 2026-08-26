@@ -1,7 +1,7 @@
 from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
-
+import uuid
 
 class CartItem(models.Model):
     """
@@ -17,6 +17,11 @@ class CartItem(models.Model):
     The unit_price is a snapshot of the price at the
     time the item is added to the cart.
     """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     # ==================================================
     # Cart

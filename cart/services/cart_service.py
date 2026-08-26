@@ -1,9 +1,8 @@
 from decimal import Decimal
 from django.db import transaction
 from ..models.cart import Cart
-from ..models.cart_item import Cart, CartItem
+from ..models.cart_item import CartItem
 from vendors.models import Product, ProductVariant
-
 
 class CartService:
     """

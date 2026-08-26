@@ -2,6 +2,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+import uuid
 
 
 class Cart(models.Model):
@@ -20,6 +21,11 @@ class Cart(models.Model):
     CartItem is responsible for the individual products
     or variants inside the cart.
     """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     # ==================================================
     # Customer

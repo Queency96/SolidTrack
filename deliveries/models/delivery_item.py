@@ -5,6 +5,7 @@ from django.db import models
 from common.models import TimeStampedModel
 from decimal import Decimal
 from riders.models import RiderProfile
+import uuid
 
 class DeliveryItem(TimeStampedModel):
     """
@@ -18,6 +19,11 @@ class DeliveryItem(TimeStampedModel):
     stored as snapshots so historical deliveries remain
     accurate even if the product changes later.
     """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     # ==================================================
     # Delivery

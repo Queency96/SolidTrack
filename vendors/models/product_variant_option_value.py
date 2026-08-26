@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+import uuid
 
 
 class ProductVariantOptionValue(models.Model):
@@ -35,6 +36,12 @@ class ProductVariantOptionValue(models.Model):
         Color → Blue
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Variant
     # ==================================================

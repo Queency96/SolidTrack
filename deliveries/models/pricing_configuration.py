@@ -5,6 +5,7 @@ from django.db import models
 from common.models import TimeStampedModel
 from decimal import Decimal
 from riders.models import RiderProfile
+import uuid
 
 
 
@@ -22,6 +23,12 @@ class PricingConfiguration(TimeStampedModel):
         help_text="Example: Lagos Default Pricing",
     )
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # -----------------------
     # Base Pricing
     # -----------------------

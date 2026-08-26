@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+import uuid
 
 
 class ProductOptionValue(models.Model):
@@ -25,6 +26,12 @@ class ProductOptionValue(models.Model):
             └── 512GB
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Option
     # ==================================================

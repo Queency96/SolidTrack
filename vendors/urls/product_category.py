@@ -36,7 +36,7 @@ urlpatterns = [
     ),
 
     path(
-        "/categories/admin/<int:pk>/",
+        "categories/admin/<int:pk>/",
         AdminProductCategoryDetailView.as_view(),
         name="admin-category-detail",
     ),

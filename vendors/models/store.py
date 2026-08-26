@@ -1,6 +1,7 @@
 from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
+import uuid
 
 
 class VendorStore(models.Model):
@@ -29,6 +30,12 @@ class VendorStore(models.Model):
                └── Product F
     """
 
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    
     # ==================================================
     # Vendor
     # ==================================================
