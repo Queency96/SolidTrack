@@ -1,10 +1,10 @@
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.utils import timezone
 
-from deliveries.models.models import (
+from deliveries.models import (
     Delivery,
     DeliveryOffer,
 )
@@ -25,6 +25,7 @@ class DeliveryOfferService:
     • Cancel offers
 
     This service does NOT:
+
         • Create assignments
         • Assign riders
         • Redispatch deliveries
@@ -37,6 +38,14 @@ class DeliveryOfferService:
         DispatchCoordinator
         DispatchNotifier
         EventPublisher
+
+    Lifecycle
+    ---------
+        PENDING
+            ├── ACCEPTED
+            ├── REJECTED
+            ├── EXPIRED
+            └── CANCELLED
     """
 
     # ==================================================
@@ -64,17 +73,40 @@ class DeliveryOfferService:
         """
 
         # ------------------------------------------
+        # Validate delivery
+        # ------------------------------------------
+
+        if delivery is None:
+            raise InvalidOfferState(
+                "Delivery is required to create an offer."
+            )
+
+        # ------------------------------------------
+        # Validate rider
+        # ------------------------------------------
+
+        if rider is None:
+            raise InvalidOfferState(
+                "Rider is required to create an offer."
+            )
+
+        # ------------------------------------------
         # Validate timeout
         # ------------------------------------------
 
         if timeout is None:
-
             raise InvalidOfferState(
                 "Offer timeout is required."
             )
 
-        if timeout <= 0:
+        try:
+            timeout = int(timeout)
+        except (TypeError, ValueError):
+            raise InvalidOfferState(
+                "Offer timeout must be a valid integer."
+            )
 
+        if timeout <= 0:
             raise InvalidOfferState(
                 "Offer timeout must be greater than zero."
             )
@@ -84,17 +116,18 @@ class DeliveryOfferService:
         # ------------------------------------------
 
         if radius is None:
-
             raise InvalidOfferState(
                 "Search radius is required."
             )
 
-        radius = Decimal(
-            str(radius)
-        )
+        try:
+            radius = Decimal(str(radius))
+        except (InvalidOperation, TypeError, ValueError):
+            raise InvalidOfferState(
+                "Search radius must be a valid number."
+            )
 
         if radius <= 0:
-
             raise InvalidOfferState(
                 "Search radius must be greater than zero."
             )
@@ -112,7 +145,7 @@ class DeliveryOfferService:
         )
 
         # ------------------------------------------
-        # Validate delivery state
+        # Validate delivery
         # ------------------------------------------
 
         cls._validate_delivery(
@@ -120,34 +153,20 @@ class DeliveryOfferService:
         )
 
         # ------------------------------------------
-        # Validate rider
-        # ------------------------------------------
-
-        if rider is None:
-
-            raise InvalidOfferState(
-                "Rider is required to create an offer."
-            )
-
-        # ------------------------------------------
         # Prevent duplicate pending offer
         # ------------------------------------------
 
         existing_offer = (
             DeliveryOffer.objects
-            .select_for_update()
             .filter(
-                delivery=delivery,
-                rider=rider,
-                status=(
-                    DeliveryOffer.Status.PENDING
-                ),
+                delivery_id=delivery.pk,
+                rider_id=rider.pk,
+                status=DeliveryOffer.Status.PENDING,
             )
             .first()
         )
 
         if existing_offer:
-
             raise InvalidOfferState(
                 "This rider already has a pending "
                 "offer for this delivery."
@@ -157,8 +176,10 @@ class DeliveryOfferService:
         # Calculate expiration
         # ------------------------------------------
 
+        now = timezone.now()
+
         expires_at = (
-            timezone.now()
+            now
             + timedelta(
                 seconds=timeout,
             )
@@ -173,9 +194,7 @@ class DeliveryOfferService:
             rider=rider,
             search_radius=radius,
             expires_at=expires_at,
-            status=(
-                DeliveryOffer.Status.PENDING
-            ),
+            status=DeliveryOffer.Status.PENDING,
         )
 
     # ==================================================
@@ -191,23 +210,70 @@ class DeliveryOfferService:
         """
         Accept a pending delivery offer.
 
-        This method only changes the offer state.
+        This method owns ONLY the offer lifecycle.
 
-        Assignment creation is handled separately by
+        It does NOT create a DeliveryAssignment.
+
+        Assignment creation belongs to
         AssignmentService.
+
+        Competing pending offers for the same delivery
+        are cancelled after this offer is accepted.
         """
+
+        # ------------------------------------------
+        # Lock offer
+        # ------------------------------------------
 
         offer = cls._lock_offer(
             offer,
         )
 
-        cls._validate_pending(
+        # ------------------------------------------
+        # Validate pending
+        # ------------------------------------------
+
+        cls._validate_actionable(
             offer,
+            action="accept",
         )
 
-        cls._update_status(
-            offer,
-            DeliveryOffer.Status.ACCEPTED,
+        # ------------------------------------------
+        # Accept
+        # ------------------------------------------
+
+        now = timezone.now()
+
+        offer.status = (
+            DeliveryOffer.Status.ACCEPTED
+        )
+
+        offer.responded_at = now
+
+        offer.save(
+            update_fields=[
+                "status",
+                "responded_at",
+            ],
+        )
+
+        # ------------------------------------------
+        # Cancel competing offers
+        # ------------------------------------------
+
+        (
+            DeliveryOffer.objects
+            .filter(
+                delivery_id=offer.delivery_id,
+                status=DeliveryOffer.Status.PENDING,
+            )
+            .exclude(
+                pk=offer.pk,
+            )
+            .update(
+                status=DeliveryOffer.Status.CANCELLED,
+                responded_at=now,
+            )
         )
 
         return offer
@@ -225,19 +291,34 @@ class DeliveryOfferService:
     ):
         """
         Reject a pending delivery offer.
+
+        An expired offer cannot be rejected.
         """
+
+        # ------------------------------------------
+        # Lock offer
+        # ------------------------------------------
 
         offer = cls._lock_offer(
             offer,
         )
 
-        cls._validate_pending(
+        # ------------------------------------------
+        # Validate actionable state
+        # ------------------------------------------
+
+        cls._validate_actionable(
             offer,
+            action="reject",
         )
 
+        # ------------------------------------------
+        # Reject
+        # ------------------------------------------
+
         cls._update_status(
-            offer,
-            DeliveryOffer.Status.REJECTED,
+            offer=offer,
+            status=DeliveryOffer.Status.REJECTED,
             rejection_reason=reason,
         )
 
@@ -254,39 +335,64 @@ class DeliveryOfferService:
         offer,
     ):
         """
-        Explicitly expire a pending offer.
+        Expire a pending delivery offer.
 
-        The offer must actually be past its expiration
-        timestamp.
+        IMPORTANT
+        ---------
+        Unlike accept/reject/cancel, expiration requires
+        the offer to already be past expires_at.
+
+        Therefore an expired PENDING offer is a valid
+        candidate for this method.
         """
+
+        # ------------------------------------------
+        # Lock offer
+        # ------------------------------------------
 
         offer = cls._lock_offer(
             offer,
         )
 
-        cls._validate_pending(
-            offer,
-        )
+        # ------------------------------------------
+        # Validate state
+        # ------------------------------------------
 
-        now = timezone.now()
+        if offer.status != DeliveryOffer.Status.PENDING:
+            raise InvalidOfferState(
+                f"Offer with status "
+                f"'{offer.status}' cannot be expired."
+            )
+
+        # ------------------------------------------
+        # Validate expiration timestamp
+        # ------------------------------------------
 
         if offer.expires_at is None:
-
             raise InvalidOfferState(
                 "This delivery offer has no "
                 "expiration time."
             )
 
-        if offer.expires_at > now:
+        # ------------------------------------------
+        # Ensure offer actually expired
+        # ------------------------------------------
 
+        now = timezone.now()
+
+        if offer.expires_at > now:
             raise InvalidOfferState(
                 "This delivery offer has not "
                 "expired yet."
             )
 
+        # ------------------------------------------
+        # Expire
+        # ------------------------------------------
+
         cls._update_status(
-            offer,
-            DeliveryOffer.Status.EXPIRED,
+            offer=offer,
+            status=DeliveryOffer.Status.EXPIRED,
         )
 
         return offer
@@ -306,19 +412,35 @@ class DeliveryOfferService:
 
         Cancellation is intentionally separate from
         expiration and rejection.
+
+        An offer can only be cancelled while it is
+        still actionable.
         """
+
+        # ------------------------------------------
+        # Lock offer
+        # ------------------------------------------
 
         offer = cls._lock_offer(
             offer,
         )
 
-        cls._validate_pending(
+        # ------------------------------------------
+        # Validate actionable state
+        # ------------------------------------------
+
+        cls._validate_actionable(
             offer,
+            action="cancel",
         )
 
+        # ------------------------------------------
+        # Cancel
+        # ------------------------------------------
+
         cls._update_status(
-            offer,
-            DeliveryOffer.Status.CANCELLED,
+            offer=offer,
+            status=DeliveryOffer.Status.CANCELLED,
         )
 
         return offer
@@ -334,31 +456,100 @@ class DeliveryOfferService:
         """
         Lock the offer row before changing its state.
 
-        This protects against concurrent rider
-        responses such as:
+        This protects against concurrent operations such
+        as:
 
             ACCEPT + REJECT
             ACCEPT + EXPIRE
             REJECT + EXPIRE
+            CANCEL + ACCEPT
+
+        The database row lock ensures that only one
+        transaction can transition the offer at a time.
         """
 
         if offer is None:
-
             raise InvalidOfferState(
                 "Delivery offer is required."
             )
 
-        return (
-            DeliveryOffer.objects
-            .select_for_update()
-            .select_related(
-                "delivery",
-                "rider",
+        try:
+            offer_id = offer.pk
+        except AttributeError:
+            raise InvalidOfferState(
+                "Invalid delivery offer."
             )
-            .get(
-                pk=offer.pk,
+
+        try:
+
+            return (
+                DeliveryOffer.objects
+                .select_for_update()
+                .select_related(
+                    "delivery",
+                    "rider",
+                )
+                .get(
+                    pk=offer_id,
+                )
             )
-        )
+
+        except DeliveryOffer.DoesNotExist:
+
+            raise InvalidOfferState(
+                "Delivery offer does not exist."
+            )
+
+    # ==================================================
+    # Validate Actionable Offer
+    # ==================================================
+
+    @staticmethod
+    def _validate_actionable(
+        offer,
+        action,
+    ):
+        """
+        Validate whether a pending offer can perform
+        an interactive rider action.
+
+        Interactive actions:
+
+            • accept
+            • reject
+            • cancel
+
+        Expiration is handled separately by expire().
+        """
+
+        if offer.status != DeliveryOffer.Status.PENDING:
+
+            raise InvalidOfferState(
+                f"Offer with status "
+                f"'{offer.status}' cannot be "
+                f"{action}ed."
+            )
+
+        # ------------------------------------------
+        # Expiration timestamp
+        # ------------------------------------------
+
+        if offer.expires_at is None:
+
+            raise InvalidOfferState(
+                "This delivery offer has no "
+                "expiration time."
+            )
+
+        # ------------------------------------------
+        # Expiration validation
+        # ------------------------------------------
+
+        if offer.expires_at <= timezone.now():
+
+            raise InvalidOfferState(
+                "This delivery offer has expired."
+            )
 
     # ==================================================
     # Update Status
@@ -371,14 +562,30 @@ class DeliveryOfferService:
         **extra_fields,
     ):
         """
-        Update offer status and response timestamp.
+        Update offer lifecycle state.
 
-        Additional fields can be supplied for lifecycle
-        information such as rejection_reason.
+        responded_at records the time at which the
+        offer leaves PENDING state.
+
+        Additional lifecycle fields can be supplied,
+        such as rejection_reason.
         """
 
+        if offer is None:
+            raise InvalidOfferState(
+                "Delivery offer is required."
+            )
+
+        if status == DeliveryOffer.Status.PENDING:
+            raise InvalidOfferState(
+                "Lifecycle update cannot transition "
+                "an offer back to PENDING."
+            )
+
+        now = timezone.now()
+
         offer.status = status
-        offer.responded_at = timezone.now()
+        offer.responded_at = now
 
         update_fields = [
             "status",
@@ -404,49 +611,6 @@ class DeliveryOfferService:
         return offer
 
     # ==================================================
-    # Validate Pending
-    # ==================================================
-
-    @staticmethod
-    def _validate_pending(
-        offer,
-    ):
-        """
-        Ensure the offer is still actionable.
-
-        Only PENDING offers can be accepted,
-        rejected, expired, or cancelled.
-
-        An expired pending offer cannot be silently
-        converted into another state.
-        """
-
-        if (
-            offer.status
-            != DeliveryOffer.Status.PENDING
-        ):
-
-            raise InvalidOfferState(
-                "Only pending offers can be updated."
-            )
-
-        if offer.expires_at is None:
-
-            raise InvalidOfferState(
-                "This delivery offer has no "
-                "expiration time."
-            )
-
-        if (
-            offer.expires_at
-            <= timezone.now()
-        ):
-
-            raise InvalidOfferState(
-                "This delivery offer has expired."
-            )
-
-    # ==================================================
     # Validate Delivery
     # ==================================================
 
@@ -457,7 +621,25 @@ class DeliveryOfferService:
         """
         Ensure the delivery is still eligible to
         receive a rider offer.
+
+        Terminal states:
+
+            DELIVERED
+            CANCELLED
+
+        A delivery with an existing rider assignment
+        cannot receive another offer.
         """
+
+        if delivery is None:
+
+            raise InvalidOfferState(
+                "Delivery is required."
+            )
+
+        # ------------------------------------------
+        # Terminal states
+        # ------------------------------------------
 
         terminal_statuses = {
             Delivery.DeliveryStatus.DELIVERED,
@@ -472,7 +654,7 @@ class DeliveryOfferService:
             )
 
         # ------------------------------------------
-        # Prevent offering after assignment
+        # Existing rider assignment
         # ------------------------------------------
 
         if getattr(

@@ -129,6 +129,11 @@ class ProductVariant(models.Model):
         default=False,
     )
 
+    is_available = models.BooleanField(
+        default=True,
+        db_index=True,
+    )
+
     # ==================================================
     # Ordering
     # ==================================================

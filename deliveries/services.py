@@ -3,15 +3,17 @@ from notifications.services import NotificationService
 from decimal import Decimal
 from .pricing import *
 from .utils import calculate_distance
-from .models.models import (
+from .models import (
     Delivery,
-    Package,
     DeliveryAddress,
 )
+from order.models.package import(
+    Package,
+    )
 import openrouteservice
 from django.conf import settings
 from django.core.cache import cache
-from .models.models import PricingConfiguration
+from .models import PricingConfiguration
 from .distance_service import DistanceService
 from .pricing.calculator import PricingCalculator
 from deliveries.dispatch.coordinator import DispatchCoordinator

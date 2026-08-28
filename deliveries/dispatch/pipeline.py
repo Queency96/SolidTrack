@@ -1,8 +1,14 @@
+from decimal import Decimal, InvalidOperation
+
+from django.utils import timezone
+
 from deliveries.models.delivery import Delivery
+
 from .context import DispatchContext
 from .eligibility import RiderEligibilityService
 from .exceptions import (
     DispatchConfigurationError,
+    InvalidOfferState,
     NoAvailableRider,
 )
 from .matcher import RiderMatcher
@@ -19,47 +25,63 @@ class DispatchPipeline:
 
     Workflow
     --------
-    1. Mark delivery as waiting for a rider.
-    2. Find nearby eligible riders.
-    3. Rank rider matches.
-    4. Perform final eligibility validation.
-    5. Create a delivery offer.
-    6. Notify the selected rider.
+    1. Validate dispatch context.
+    2. Validate dispatch configuration.
+    3. Prepare the current dispatch attempt.
+    4. Move delivery into WAITING_FOR_RIDER.
+    5. Find nearby eligible riders.
+    6. Rank rider matches.
+    7. Perform final rider eligibility validation.
+    8. Create ONE delivery offer.
+    9. Notify the selected rider.
+    10. Return a DispatchResult.
 
-    Rider responses are handled asynchronously
-    by DispatchCoordinator.
+    Rider responses are NOT handled here.
+
+    Rider responses are handled asynchronously by
+    DispatchCoordinator.
 
     Responsibilities
     ----------------
-    This class coordinates the dispatch process.
+    DispatchPipeline coordinates the dispatch workflow.
 
     It does NOT:
+
         • Accept offers
         • Reject offers
+        • Expire offers
+        • Cancel offers
         • Assign riders
         • Manage assignment lifecycle
-        • Calculate distance
+        • Calculate distances
         • Calculate individual rider scores
         • Implement rider ranking logic
+        • Persist dispatch history
+        • Manage rider availability directly
 
     Those responsibilities belong to their respective
     services.
 
     Architecture
     ------------
-    DispatchPipeline
-        ↓
-    RiderMatcher
-        ↓
-    RiderMatch
-        ↓
-    RiderRanker
-        ↓
-    ranked RiderMatch
-        ↓
-    DeliveryOfferService
-        ↓
-    DispatchNotifier
+
+        DispatchCoordinator
+                ↓
+        DispatchContext
+                ↓
+        DispatchPipeline
+                ↓
+        RiderMatcher
+                ↓
+        RiderMatch
+                ↓
+        RiderRanker
+                ↓
+        RiderEligibilityService
+                ↓
+        DeliveryOfferService
+                ↓
+        DispatchNotifier
 
     Rider acceptance/rejection/expiration is handled
     asynchronously by DispatchCoordinator.
@@ -95,11 +117,35 @@ class DispatchPipeline:
         Returns
         -------
         DispatchResult
-            Standardized result containing the
-            dispatch context, delivery and offer.
+            Standardized dispatch result containing:
+
+                • dispatch status
+                • dispatch context
+                • delivery
+                • created offer
+                • errors
+                • warnings
         """
 
         try:
+
+            # ------------------------------------------
+            # Validate context
+            # ------------------------------------------
+
+            self._validate_context()
+
+            # ------------------------------------------
+            # Validate configuration
+            # ------------------------------------------
+
+            self._validate_configuration()
+
+            # ------------------------------------------
+            # Prepare attempt
+            # ------------------------------------------
+
+            self._prepare_attempt()
 
             # ------------------------------------------
             # Dispatch state
@@ -112,13 +158,13 @@ class DispatchPipeline:
             )
 
             # ------------------------------------------
-            # Delivery state
+            # Move delivery into waiting state
             # ------------------------------------------
 
             self._set_delivery_waiting_for_rider()
 
             # ------------------------------------------
-            # Find nearby riders
+            # Find riders
             # ------------------------------------------
 
             self._find_matches()
@@ -130,70 +176,331 @@ class DispatchPipeline:
             self._rank_matches()
 
             # ------------------------------------------
-            # Create rider offer
+            # Create offer
             # ------------------------------------------
 
             self._offer_first_rider()
 
             # ------------------------------------------
-            # Return result
+            # Final result
             # ------------------------------------------
 
-            return (
-                DispatchResult.success_result(
-                    status=self.context.status,
-                    message="Delivery offer created.",
-                    context=self.context,
-                    delivery=self.context.delivery,
-                    offer=self.context.offer,
-                )
+            return DispatchResult.success_result(
+                status=self.context.status,
+                message="Delivery offer created.",
+                context=self.context,
+                delivery=self.context.delivery,
+                offer=self.context.offer,
             )
 
         except (
             DispatchConfigurationError,
             NoAvailableRider,
+            InvalidOfferState,
         ) as exc:
 
-            self.context.update_status(
-                DispatchStatus.FAILED,
+            self._fail_context(
+                exc,
             )
 
-            self.context.add_error(
-                str(exc),
-            )
-
-            return (
-                DispatchResult.failure_result(
-                    status=DispatchStatus.FAILED,
-                    message=str(exc),
-                    context=self.context,
-                    delivery=self.context.delivery,
-                    errors=[str(exc)],
-                )
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=str(exc),
+                context=self.context,
+                delivery=self.context.delivery,
+                offer=self.context.offer,
+                errors=[
+                    str(exc),
+                ],
             )
 
         except Exception as exc:
 
-            self.context.update_status(
-                DispatchStatus.FAILED,
+            self._fail_context(
+                exc,
             )
 
-            self.context.add_error(
-                str(exc),
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=(
+                    "An unexpected error occurred "
+                    "during dispatch."
+                ),
+                context=self.context,
+                delivery=self.context.delivery,
+                offer=self.context.offer,
+                errors=[
+                    str(exc),
+                ],
             )
 
-            return (
-                DispatchResult.failure_result(
-                    status=DispatchStatus.FAILED,
-                    message=(
-                        "An unexpected error occurred "
-                        "during dispatch."
-                    ),
-                    context=self.context,
-                    delivery=self.context.delivery,
-                    errors=[str(exc)],
-                )
+    # ==================================================
+    # Attempt Preparation
+    # ==================================================
+
+    def _prepare_attempt(self):
+        """
+        Prepare the context for a new dispatch attempt.
+
+        DispatchContext represents only the current
+        in-memory dispatch attempt.
+
+        Persistent history remains stored in the database.
+        """
+
+        if self.context.attempt < 1:
+            self.context.attempt = 1
+
+        # ----------------------------------------------
+        # Clear transient state
+        # ----------------------------------------------
+
+        self.context.selected_rider = None
+        self.context.selected_match = None
+        self.context.offer = None
+        self.context.assignment = None
+
+        # ----------------------------------------------
+        # Clear current search state
+        # ----------------------------------------------
+
+        self.context.clear_matches()
+
+        self.context.search_radius = Decimal("0")
+
+        # ----------------------------------------------
+        # Metadata
+        # ----------------------------------------------
+
+        self.context.add_metadata(
+            "dispatch_attempt",
+            self.context.attempt,
+        )
+
+        self.context.add_metadata(
+            "dispatch_started_at",
+            timezone.now(),
+        )
+
+        self.context.add_metadata(
+            "rider_notified",
+            False,
+        )
+
+        self.context.add_metadata(
+            "offer_created",
+            False,
+        )
+
+    # ==================================================
+    # Context Validation
+    # ==================================================
+
+    def _validate_context(self):
+        """
+        Validate the minimum context required by the
+        dispatch pipeline.
+        """
+
+        if self.context is None:
+            raise DispatchConfigurationError(
+                "Dispatch context is required."
             )
+
+        if self.context.delivery is None:
+            raise DispatchConfigurationError(
+                "Delivery is required for dispatch."
+            )
+
+        if self.context.config is None:
+            raise DispatchConfigurationError(
+                "Dispatch configuration is required."
+            )
+
+    # ==================================================
+    # Configuration Validation
+    # ==================================================
+
+    def _validate_configuration(self):
+        """
+        Validate dispatch configuration before searching
+        for riders.
+        """
+
+        config = self.context.config
+
+        # ----------------------------------------------
+        # Initial radius
+        # ----------------------------------------------
+
+        initial_radius = self._to_decimal(
+            getattr(
+                config,
+                "initial_search_radius_km",
+                None,
+            ),
+        )
+
+        if initial_radius is None:
+            raise DispatchConfigurationError(
+                "Initial search radius is not configured."
+            )
+
+        if initial_radius <= Decimal("0"):
+            raise DispatchConfigurationError(
+                "Initial search radius must be "
+                "greater than zero."
+            )
+
+        # ----------------------------------------------
+        # Maximum radius
+        # ----------------------------------------------
+
+        maximum_radius = self._to_decimal(
+            getattr(
+                config,
+                "maximum_search_radius_km",
+                None,
+            ),
+        )
+
+        if maximum_radius is None:
+            raise DispatchConfigurationError(
+                "Maximum search radius is not configured."
+            )
+
+        if maximum_radius <= Decimal("0"):
+            raise DispatchConfigurationError(
+                "Maximum search radius must be "
+                "greater than zero."
+            )
+
+        # ----------------------------------------------
+        # Radius relationship
+        # ----------------------------------------------
+
+        if maximum_radius < initial_radius:
+            raise DispatchConfigurationError(
+                "Maximum search radius must be "
+                "greater than or equal to the "
+                "initial search radius."
+            )
+
+        # ----------------------------------------------
+        # Search increment
+        # ----------------------------------------------
+
+        increment = self._to_decimal(
+            getattr(
+                config,
+                "search_radius_increment_km",
+                None,
+            ),
+        )
+
+        if increment is None:
+            raise DispatchConfigurationError(
+                "Search radius increment is not "
+                "configured."
+            )
+
+        if increment <= Decimal("0"):
+            raise DispatchConfigurationError(
+                "Search radius increment must be "
+                "greater than zero."
+            )
+
+        # ----------------------------------------------
+        # Rider response timeout
+        # ----------------------------------------------
+
+        timeout = self._to_decimal(
+            getattr(
+                config,
+                "rider_response_timeout_seconds",
+                None,
+            ),
+        )
+
+        if timeout is None:
+            raise DispatchConfigurationError(
+                "Rider response timeout is not configured."
+            )
+
+        if timeout <= Decimal("0"):
+            raise DispatchConfigurationError(
+                "Rider response timeout must be "
+                "greater than zero."
+            )
+
+        # ----------------------------------------------
+        # Normalize timeout to integer seconds
+        # ----------------------------------------------
+
+        timeout_seconds = int(
+            timeout,
+        )
+
+        if timeout_seconds <= 0:
+            raise DispatchConfigurationError(
+                "Rider response timeout must be "
+                "at least one second."
+            )
+
+        # ----------------------------------------------
+        # Store normalized configuration metadata
+        # ----------------------------------------------
+
+        self.context.add_metadata(
+            "initial_search_radius_km",
+            initial_radius,
+        )
+
+        self.context.add_metadata(
+            "maximum_search_radius_km",
+            maximum_radius,
+        )
+
+        self.context.add_metadata(
+            "search_radius_increment_km",
+            increment,
+        )
+
+        self.context.add_metadata(
+            "rider_response_timeout_seconds",
+            timeout_seconds,
+        )
+
+    # ==================================================
+    # Failure
+    # ==================================================
+
+    def _fail_context(
+        self,
+        error,
+    ):
+        """
+        Mark the current dispatch context as failed.
+        """
+
+        message = str(error)
+
+        self.context.update_status(
+            DispatchStatus.FAILED,
+        )
+
+        self.context.update_step(
+            "Failed",
+        )
+
+        self.context.add_error(
+            message,
+        )
+
+        self.context.add_metadata(
+            "dispatch_failed_at",
+            timezone.now(),
+        )
 
     # ==================================================
     # Delivery State
@@ -201,19 +508,21 @@ class DispatchPipeline:
 
     def _set_delivery_waiting_for_rider(self):
         """
-        Mark the delivery as waiting for a rider.
+        Move the delivery into WAITING_FOR_RIDER.
 
-        DELIVERED and CANCELLED deliveries cannot enter
-        the dispatch workflow.
+        Allowed starting states:
 
-        FAILED deliveries remain retryable.
+            PENDING
+            WAITING_FOR_RIDER
+            FAILED
+
+        Terminal states:
+
+            DELIVERED
+            CANCELLED
         """
 
         delivery = self.context.delivery
-
-        # ----------------------------------------------
-        # Validate delivery
-        # ----------------------------------------------
 
         if delivery is None:
             raise NoAvailableRider(
@@ -221,7 +530,7 @@ class DispatchPipeline:
             )
 
         # ----------------------------------------------
-        # Terminal state validation
+        # Terminal states
         # ----------------------------------------------
 
         if (
@@ -242,17 +551,84 @@ class DispatchPipeline:
             )
 
         # ----------------------------------------------
-        # Update delivery state
+        # Allowed states
         # ----------------------------------------------
+
+        allowed_statuses = {
+            Delivery.DeliveryStatus.PENDING,
+            Delivery.DeliveryStatus.WAITING_FOR_RIDER,
+            Delivery.DeliveryStatus.FAILED,
+        }
+
+        if delivery.status not in allowed_statuses:
+            raise NoAvailableRider(
+                f"Delivery with status "
+                f"'{delivery.status}' cannot "
+                f"enter the dispatch workflow."
+            )
+
+        # ----------------------------------------------
+        # Update state
+        # ----------------------------------------------
+
+        now = timezone.now()
 
         delivery.status = (
             Delivery.DeliveryStatus.WAITING_FOR_RIDER
         )
 
+        update_fields = [
+            "status",
+        ]
+
+        # ----------------------------------------------
+        # waiting_for_rider_at
+        # ----------------------------------------------
+
+        if hasattr(
+            delivery,
+            "waiting_for_rider_at",
+        ):
+
+            delivery.waiting_for_rider_at = now
+
+            update_fields.append(
+                "waiting_for_rider_at",
+            )
+
+        # ----------------------------------------------
+        # updated_at
+        # ----------------------------------------------
+
+        if hasattr(
+            delivery,
+            "updated_at",
+        ):
+
+            update_fields.append(
+                "updated_at",
+            )
+
         delivery.save(
-            update_fields=[
-                "status",
-            ],
+            update_fields=update_fields,
+        )
+
+        # ----------------------------------------------
+        # Metadata
+        # ----------------------------------------------
+
+        self.context.add_metadata(
+            "delivery_status",
+            delivery.status,
+        )
+
+        self.context.add_metadata(
+            "waiting_for_rider_at",
+            getattr(
+                delivery,
+                "waiting_for_rider_at",
+                now,
+            ),
         )
 
         self.context.update_step(
@@ -265,17 +641,17 @@ class DispatchPipeline:
 
     def _find_matches(self):
         """
-        Search progressively larger geographic
-        radii until eligible riders are found.
+        Search progressively larger geographic radii.
 
-        RiderMatcher is responsible for:
+        RiderMatcher owns:
 
             • Geographic search
-            • Rider eligibility filtering
-            • Creating RiderMatch objects
+            • Rider filtering
+            • Eligibility query
+            • RiderMatch construction
 
-        DispatchPipeline only controls the search
-        progression.
+        DispatchPipeline owns only the progressive
+        search strategy.
         """
 
         self.context.update_status(
@@ -286,37 +662,25 @@ class DispatchPipeline:
 
         config = self.context.config
 
-        radius = config.initial_search_radius_km
-        maximum = config.maximum_search_radius_km
-        increment = config.search_radius_increment_km
+        radius = self._to_decimal(
+            config.initial_search_radius_km,
+        )
 
-        # ----------------------------------------------
-        # Validate configuration
-        # ----------------------------------------------
+        maximum = self._to_decimal(
+            config.maximum_search_radius_km,
+        )
 
-        if radius <= 0:
+        increment = self._to_decimal(
+            config.search_radius_increment_km,
+        )
+
+        if (
+            radius is None
+            or maximum is None
+            or increment is None
+        ):
             raise DispatchConfigurationError(
-                "Initial search radius must be "
-                "greater than zero."
-            )
-
-        if maximum <= 0:
-            raise DispatchConfigurationError(
-                "Maximum search radius must be "
-                "greater than zero."
-            )
-
-        if increment <= 0:
-            raise DispatchConfigurationError(
-                "Search radius increment must be "
-                "greater than zero."
-            )
-
-        if maximum < radius:
-            raise DispatchConfigurationError(
-                "Maximum search radius must be "
-                "greater than or equal to the "
-                "initial search radius."
+                "Invalid dispatch search configuration."
             )
 
         # ----------------------------------------------
@@ -336,24 +700,61 @@ class DispatchPipeline:
                 )
             )
 
+            matches = list(
+                matches or [],
+            )
+
+            # ------------------------------------------
+            # Riders found
+            # ------------------------------------------
+
             if matches:
 
-                self.context.set(
-                    search_radius=radius,
-                    matches=list(matches),
+                self.context.set_matches(
+                    matches,
+                )
+
+                self.context.search_radius = radius
+
+                self.context.add_metadata(
+                    "matched_rider_count",
+                    len(matches),
+                )
+
+                self.context.add_metadata(
+                    "search_radius_km",
+                    radius,
                 )
 
                 self.context.update_status(
                     DispatchStatus.MATCHED,
                 )
 
+                self.context.update_step(
+                    "MatchesFound",
+                )
+
                 return
+
+            # ------------------------------------------
+            # Expand radius
+            # ------------------------------------------
 
             radius += increment
 
         # ----------------------------------------------
-        # No riders found
+        # No riders
         # ----------------------------------------------
+
+        self.context.add_metadata(
+            "matched_rider_count",
+            0,
+        )
+
+        self.context.add_metadata(
+            "search_radius_km",
+            maximum,
+        )
 
         raise NoAvailableRider(
             "No eligible rider found within "
@@ -366,13 +767,7 @@ class DispatchPipeline:
 
     def _rank_matches(self):
         """
-        Rank the RiderMatch objects using RiderRanker.
-
-        RiderRanker owns the actual ranking/scoring
-        strategy.
-
-        DispatchPipeline does not calculate scores or
-        sort riders itself.
+        Rank RiderMatch objects using RiderRanker.
         """
 
         self.context.update_step(
@@ -381,28 +776,20 @@ class DispatchPipeline:
 
         matches = self.context.matches
 
-        # ----------------------------------------------
-        # Validate matches
-        # ----------------------------------------------
-
         if not matches:
             raise NoAvailableRider(
                 "No rider matches available "
                 "for ranking."
             )
 
-        # ----------------------------------------------
-        # Rank matches
-        # ----------------------------------------------
-
         ranked_matches = RiderRanker.rank(
             context=self.context,
             matches=matches,
         )
 
-        # ----------------------------------------------
-        # Validate ranking result
-        # ----------------------------------------------
+        ranked_matches = list(
+            ranked_matches or [],
+        )
 
         if not ranked_matches:
             raise NoAvailableRider(
@@ -410,16 +797,21 @@ class DispatchPipeline:
                 "eligible matches."
             )
 
-        # ----------------------------------------------
-        # Store ranking
-        # ----------------------------------------------
+        self.context.set_ranked_matches(
+            ranked_matches,
+        )
 
-        self.context.set(
-            ranked_matches=list(ranked_matches),
+        self.context.add_metadata(
+            "ranked_rider_count",
+            len(ranked_matches),
         )
 
         self.context.update_status(
             DispatchStatus.RANKED,
+        )
+
+        self.context.update_step(
+            "MatchesRanked",
         )
 
     # ==================================================
@@ -428,21 +820,18 @@ class DispatchPipeline:
 
     def _offer_first_rider(self):
         """
-        Create an offer for the highest-ranked rider
-        who is still eligible.
+        Create exactly ONE offer for the highest-ranked
+        rider who remains eligible.
 
         A final eligibility check is performed immediately
-        before creating the offer because rider state may
-        have changed after the initial matching query.
+        before offer creation.
 
-        If a ranked rider is no longer eligible:
+        If offer creation fails because another concurrent
+        dispatch process has already created a pending offer
+        for the rider, that rider is excluded and the next
+        ranked rider is attempted.
 
-            1. Exclude the rider.
-            2. Remove the rider from the current matches.
-            3. Continue to the next ranked rider.
-
-        This prevents a stale rider state from resulting
-        in an invalid offer.
+        Only one successful offer is created per pipeline run.
         """
 
         self.context.update_step(
@@ -453,33 +842,41 @@ class DispatchPipeline:
             self.context.ranked_matches
         )
 
-        # ----------------------------------------------
-        # Validate ranked matches
-        # ----------------------------------------------
-
         if not ranked_matches:
             raise NoAvailableRider(
                 "No ranked rider is available "
                 "for dispatch."
             )
 
-        # ----------------------------------------------
-        # Iterate through ranked riders
-        # ----------------------------------------------
-
         for match in ranked_matches:
 
-            rider = match.rider
+            if match is None:
+                continue
+
+            rider = getattr(
+                match,
+                "rider",
+                None,
+            )
 
             # ------------------------------------------
-            # Validate rider
+            # Invalid match
             # ------------------------------------------
 
             if rider is None:
                 continue
 
+            rider_id = getattr(
+                rider,
+                "id",
+                None,
+            )
+
+            if rider_id is None:
+                continue
+
             # ------------------------------------------
-            # Already excluded
+            # Existing exclusion
             # ------------------------------------------
 
             if self.context.is_rider_excluded(
@@ -488,49 +885,205 @@ class DispatchPipeline:
                 continue
 
             # ------------------------------------------
-            # Final eligibility validation
+            # Final eligibility check
             # ------------------------------------------
 
-            if not RiderEligibilityService.is_eligible(
-                rider=rider,
-                context=self.context,
-            ):
+            try:
+
+                eligible = (
+                    RiderEligibilityService.is_eligible(
+                        rider=rider,
+                        context=self.context,
+                    )
+                )
+
+            except Exception as exc:
 
                 self.context.add_warning(
-                    f"Rider {rider.id} is no longer "
+                    f"Final eligibility validation "
+                    f"failed for rider {rider_id}."
+                )
+
+                self.context.add_error(
+                    str(exc),
+                )
+
+                self._exclude_rider(
+                    rider_id,
+                )
+
+                continue
+
+            if not eligible:
+
+                self.context.add_warning(
+                    f"Rider {rider_id} is no longer "
                     "eligible for this dispatch."
                 )
 
                 self._exclude_rider(
-                    rider.id,
+                    rider_id,
                 )
 
                 continue
 
             # ------------------------------------------
-            # Create offer
+            # Determine offer radius
             # ------------------------------------------
 
-            offer = (
-                DeliveryOfferService.create(
-                    delivery=self.context.delivery,
-                    rider=rider,
-                    radius=match.search_radius,
-                    timeout=(
-                        self.context.config
-                        .rider_response_timeout_seconds
-                    ),
+            offer_radius = getattr(
+                match,
+                "search_radius",
+                None,
+            )
+
+            if offer_radius is None:
+                offer_radius = (
+                    self.context.search_radius
                 )
+
+            offer_radius = self._to_decimal(
+                offer_radius,
+            )
+
+            if offer_radius is None:
+                raise DispatchConfigurationError(
+                    "Unable to determine the search "
+                    "radius for the delivery offer."
+                )
+
+            if offer_radius <= Decimal("0"):
+                raise DispatchConfigurationError(
+                    "Delivery offer search radius "
+                    "must be greater than zero."
+                )
+
+            # ------------------------------------------
+            # Timeout
+            # ------------------------------------------
+
+            timeout = getattr(
+                self.context.config,
+                "rider_response_timeout_seconds",
+                None,
+            )
+
+            timeout = self._to_decimal(
+                timeout,
+            )
+
+            if timeout is None or timeout <= Decimal("0"):
+                raise DispatchConfigurationError(
+                    "Invalid rider response timeout."
+                )
+
+            timeout_seconds = int(
+                timeout,
+            )
+
+            if timeout_seconds <= 0:
+                raise DispatchConfigurationError(
+                    "Rider response timeout must be "
+                    "at least one second."
+                )
+
+            # ------------------------------------------
+            # Create offer
+            #
+            # IMPORTANT:
+            #
+            # DeliveryOfferService exposes create(),
+            # not create_offer().
+            # ------------------------------------------
+
+            try:
+
+                offer = (
+                    DeliveryOfferService.create(
+                        delivery=self.context.delivery,
+                        rider=rider,
+                        radius=offer_radius,
+                        timeout=timeout_seconds,
+                    )
+                )
+
+            except InvalidOfferState as exc:
+
+                # --------------------------------------
+                # Concurrency / lifecycle conflict
+                # --------------------------------------
+
+                self.context.add_warning(
+                    f"Unable to create offer for "
+                    f"rider {rider_id}: {exc}"
+                )
+
+                self._exclude_rider(
+                    rider_id,
+                )
+
+                continue
+
+            # ------------------------------------------
+            # Validate created offer
+            # ------------------------------------------
+
+            if offer is None:
+                self.context.add_warning(
+                    f"Offer creation returned no "
+                    f"offer for rider {rider_id}."
+                )
+
+                self._exclude_rider(
+                    rider_id,
+                )
+
+                continue
+
+            # ------------------------------------------
+            # Store selection
+            # ------------------------------------------
+
+            self.context.select_match(
+                match,
+            )
+
+            self.context.set_offer(
+                offer,
             )
 
             # ------------------------------------------
-            # Store selected rider
+            # Metadata
             # ------------------------------------------
 
-            self.context.set(
-                selected_rider=rider,
-                selected_match=match,
-                offer=offer,
+            self.context.add_metadata(
+                "selected_rider_id",
+                rider_id,
+            )
+
+            self.context.add_metadata(
+                "offer_id",
+                offer.id,
+            )
+
+            self.context.add_metadata(
+                "offer_search_radius_km",
+                offer_radius,
+            )
+
+            self.context.add_metadata(
+                "offer_timeout_seconds",
+                timeout_seconds,
+            )
+
+            self.context.add_metadata(
+                "offer_created_at",
+                timezone.now(),
+            )
+
+            self.context.add_metadata(
+                "offer_created",
+                True,
             )
 
             # ------------------------------------------
@@ -542,7 +1095,7 @@ class DispatchPipeline:
             )
 
             # ------------------------------------------
-            # Dispatch state
+            # Final state
             # ------------------------------------------
 
             self.context.update_status(
@@ -573,11 +1126,30 @@ class DispatchPipeline:
         """
         Notify the selected rider.
 
-        Notification failure does not delete the offer.
+        Notification failure does NOT invalidate the
+        persisted offer.
 
-        The offer is already persisted and therefore
-        remains available for recovery/monitoring logic.
+        The offer remains available for:
+
+            • Rider response
+            • Expiration handling
+            • Monitoring
+            • Recovery
         """
+
+        if offer is None:
+
+            self.context.add_warning(
+                "Cannot notify rider because "
+                "delivery offer is missing."
+            )
+
+            self.context.add_metadata(
+                "rider_notified",
+                False,
+            )
+
+            return False
 
         try:
 
@@ -590,6 +1162,11 @@ class DispatchPipeline:
                 True,
             )
 
+            self.context.add_metadata(
+                "rider_notified_at",
+                timezone.now(),
+            )
+
             return True
 
         except Exception as exc:
@@ -599,13 +1176,16 @@ class DispatchPipeline:
                 False,
             )
 
+            # Notification failure is a warning,
+            # not a dispatch failure.
+
             self.context.add_warning(
                 "Delivery offer was created, "
                 "but rider notification failed."
             )
 
-            self.context.add_error(
-                str(exc),
+            self.context.add_warning(
+                f"Rider notification error: {exc}"
             )
 
             return False
@@ -622,11 +1202,11 @@ class DispatchPipeline:
         Exclude a rider from the current dispatch
         lifecycle.
 
-        DispatchContext.excluded_rider_ids is the
-        centralized source of truth.
+        Persistent offer history remains stored in the
+        DeliveryOffer table.
 
-        The rider is also removed from the current
-        match collections.
+        DispatchCoordinator reconstructs historical
+        exclusions for subsequent dispatch attempts.
         """
 
         if rider_id is None:
@@ -641,15 +1221,23 @@ class DispatchPipeline:
         )
 
         # ----------------------------------------------
-        # Remove from matches
+        # Remove from raw matches
         # ----------------------------------------------
 
         self.context.matches = [
             match
             for match in self.context.matches
             if (
-                match.rider is not None
-                and match.rider.id != rider_id
+                getattr(
+                    match,
+                    "rider",
+                    None,
+                ) is not None
+                and getattr(
+                    match.rider,
+                    "id",
+                    None,
+                ) != rider_id
             )
         ]
 
@@ -661,7 +1249,69 @@ class DispatchPipeline:
             match
             for match in self.context.ranked_matches
             if (
-                match.rider is not None
-                and match.rider.id != rider_id
+                getattr(
+                    match,
+                    "rider",
+                    None,
+                ) is not None
+                and getattr(
+                    match.rider,
+                    "id",
+                    None,
+                ) != rider_id
             )
         ]
+
+        # ----------------------------------------------
+        # Metadata
+        # ----------------------------------------------
+
+        self.context.add_metadata(
+            "excluded_rider_count",
+            len(
+                self.context.excluded_rider_ids,
+            ),
+        )
+
+        self.context.add_metadata(
+            "last_excluded_rider_id",
+            rider_id,
+        )
+
+    # ==================================================
+    # Decimal Helper
+    # ==================================================
+
+    @staticmethod
+    def _to_decimal(
+        value,
+    ):
+        """
+        Safely convert configuration/radius values
+        to Decimal.
+
+        Returns None when conversion is impossible.
+        """
+
+        if value is None:
+            return None
+
+        if isinstance(
+            value,
+            Decimal,
+        ):
+            return value
+
+        try:
+
+            return Decimal(
+                str(value),
+            )
+
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
+
+            return None

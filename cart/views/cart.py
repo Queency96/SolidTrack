@@ -705,3 +705,121 @@ class CartAddItemView(APIView):
             serializer.data,
             status=status.HTTP_201_CREATED,
         )
+
+
+
+
+class CartItemUpdateView(APIView):
+    """
+    Update the quantity of an existing cart item.
+
+    Business logic is handled entirely by
+    CartService.update_item().
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+    ]
+
+    def patch(
+        self,
+        request,
+        pk,
+    ):
+        """
+        Set the cart item's quantity.
+        """
+
+        quantity = request.data.get(
+            "quantity",
+        )
+
+        if quantity is None:
+
+            return Response(
+                {
+                    "quantity": (
+                        "Quantity is required."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+
+            cart_item = (
+                CartService.update_item(
+                    customer=request.user,
+                    item_id=pk,
+                    quantity=quantity,
+                )
+            )
+
+        except ValueError as exc:
+
+            return Response(
+                {
+                    "detail": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = CartItemSerializer(
+            cart_item,
+            context={
+                "request": request,
+            },
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+
+
+class CartItemRemoveView(APIView):
+    """
+    Remove an item from the authenticated customer's
+    active cart.
+
+    All business logic is handled by CartService.
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+    ]
+
+    def delete(
+        self,
+        request,
+        pk,
+    ):
+        """
+        Remove the specified cart item.
+        """
+
+        try:
+
+            CartService.remove_item(
+                customer=request.user,
+                item_id=pk,
+            )
+
+        except ValueError as exc:
+
+            return Response(
+                {
+                    "detail": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "Cart item removed successfully."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )

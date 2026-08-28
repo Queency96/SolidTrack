@@ -1,8 +1,16 @@
 from decimal import Decimal
+from uuid import UUID
+
 from django.db import transaction
+
 from ..models.cart import Cart
 from ..models.cart_item import CartItem
-from vendors.models import Product, ProductVariant
+
+from vendors.models import (
+    Product,
+    ProductVariant,
+)
+
 
 class CartService:
     """
@@ -20,12 +28,7 @@ class CartService:
     • Validate inventory
     • Preserve cart price snapshots
 
-    This service does NOT:
-        • Process payments
-        • Create orders
-        • Calculate delivery fees
-        • Dispatch riders
-        • Create delivery offers
+    All public identifiers are expected to be UUIDs.
     """
 
     # ==================================================
@@ -40,7 +43,7 @@ class CartService:
         Return the customer's active cart.
 
         If the customer does not have an active cart,
-        one is created.
+        create one.
         """
 
         if customer is None:
@@ -90,13 +93,8 @@ class CartService:
         Add a product or product variant to the
         customer's active cart.
 
-        If the item already exists, its quantity is
-        increased.
-
-        Returns
-        -------
-        CartItem
-            The created or updated cart item.
+        If the item already exists, increase its
+        quantity.
         """
 
         if customer is None:
@@ -105,43 +103,23 @@ class CartService:
                 "Customer is required."
             )
 
-        # ----------------------------------------------
-        # Quantity
-        # ----------------------------------------------
-
         quantity = cls._validate_quantity(
             quantity,
         )
-
-        # ----------------------------------------------
-        # Cart
-        # ----------------------------------------------
 
         cart = cls.get_active_cart(
             customer,
         )
 
-        # ----------------------------------------------
-        # Product
-        # ----------------------------------------------
-
         product = cls._get_product(
             product_id,
         )
-
-        # ----------------------------------------------
-        # Product availability
-        # ----------------------------------------------
 
         if not product.is_available:
 
             raise ValueError(
                 "Product is not available."
             )
-
-        # ----------------------------------------------
-        # Variant
-        # ----------------------------------------------
 
         variant = None
 
@@ -156,19 +134,11 @@ class CartService:
                 variant=variant,
             )
 
-        # ----------------------------------------------
-        # Stock
-        # ----------------------------------------------
-
         cls._validate_stock(
             product=product,
             variant=variant,
             quantity=quantity,
         )
-
-        # ----------------------------------------------
-        # Existing item
-        # ----------------------------------------------
 
         cart_item = (
             CartItem.objects
@@ -207,15 +177,9 @@ class CartService:
 
             return cart_item
 
-        # ----------------------------------------------
-        # Create item
-        # ----------------------------------------------
-
-        unit_price = (
-            cls._get_current_price(
-                product=product,
-                variant=variant,
-            )
+        unit_price = cls._get_current_price(
+            product=product,
+            variant=variant,
         )
 
         cart_item = CartItem(
@@ -250,6 +214,11 @@ class CartService:
             quantity,
         )
 
+        item_id = cls._parse_uuid(
+            item_id,
+            "cart item ID",
+        )
+
         cart = cls.get_active_cart(
             customer,
         )
@@ -262,7 +231,7 @@ class CartService:
                 "variant",
             )
             .filter(
-                id=item_id,
+                pk=item_id,
                 cart=cart,
             )
             .first()
@@ -308,11 +277,16 @@ class CartService:
         quantity=1,
     ):
         """
-        Increase the quantity of an existing item.
+        Increase the quantity of an existing cart item.
         """
 
         quantity = cls._validate_quantity(
             quantity,
+        )
+
+        item_id = cls._parse_uuid(
+            item_id,
+            "cart item ID",
         )
 
         cart = cls.get_active_cart(
@@ -327,7 +301,7 @@ class CartService:
                 "variant",
             )
             .filter(
-                id=item_id,
+                pk=item_id,
                 cart=cart,
             )
             .first()
@@ -339,13 +313,13 @@ class CartService:
                 "Cart item not found."
             )
 
+        cls._validate_item_availability(
+            cart_item,
+        )
+
         new_quantity = (
             cart_item.quantity
             + quantity
-        )
-
-        cls._validate_item_availability(
-            cart_item,
         )
 
         cls._validate_stock(
@@ -354,9 +328,7 @@ class CartService:
             quantity=new_quantity,
         )
 
-        cart_item.quantity = (
-            new_quantity
-        )
+        cart_item.quantity = new_quantity
 
         cart_item.save(
             update_fields=[
@@ -380,14 +352,18 @@ class CartService:
         quantity=1,
     ):
         """
-        Decrease the quantity of an existing item.
+        Decrease the quantity of an existing cart item.
 
-        If the resulting quantity is zero or less,
-        the item is removed.
+        Remove the item when its quantity reaches zero.
         """
 
         quantity = cls._validate_quantity(
             quantity,
+        )
+
+        item_id = cls._parse_uuid(
+            item_id,
+            "cart item ID",
         )
 
         cart = cls.get_active_cart(
@@ -397,8 +373,12 @@ class CartService:
         cart_item = (
             CartItem.objects
             .select_for_update()
+            .select_related(
+                "product",
+                "variant",
+            )
             .filter(
-                id=item_id,
+                pk=item_id,
                 cart=cart,
             )
             .first()
@@ -425,9 +405,7 @@ class CartService:
             cart_item,
         )
 
-        cart_item.quantity = (
-            new_quantity
-        )
+        cart_item.quantity = new_quantity
 
         cart_item.save(
             update_fields=[
@@ -450,8 +428,13 @@ class CartService:
         item_id,
     ):
         """
-        Remove an item from the customer's active cart.
+        Remove an item from the active cart.
         """
+
+        item_id = cls._parse_uuid(
+            item_id,
+            "cart item ID",
+        )
 
         cart = cls.get_active_cart(
             customer,
@@ -459,8 +442,9 @@ class CartService:
 
         cart_item = (
             CartItem.objects
+            .select_for_update()
             .filter(
-                id=item_id,
+                pk=item_id,
                 cart=cart,
             )
             .first()
@@ -487,8 +471,7 @@ class CartService:
         customer,
     ):
         """
-        Remove all items from the customer's active
-        cart.
+        Remove all items from the active cart.
         """
 
         cart = cls.get_active_cart(
@@ -512,10 +495,10 @@ class CartService:
         customer,
     ):
         """
-        Deactivate the customer's current cart.
+        Deactivate the active cart.
 
-        Normally used after checkout has successfully
-        created an Order.
+        Normally called as part of a successful
+        checkout transaction.
         """
 
         cart = cls.get_active_cart(
@@ -563,15 +546,7 @@ class CartService:
         """
         Validate every item in the active cart.
 
-        This should be called immediately before
-        checkout.
-
-        Returns
-        -------
-        list
-            A list of validation errors.
-
-        An empty list means the cart is valid.
+        Returns an empty list when valid.
         """
 
         cart = cls.get_active_cart(
@@ -607,12 +582,8 @@ class CartService:
                 errors.append(
                     {
                         "item_id": item.pk,
-                        "product_id": (
-                            item.product_id
-                        ),
-                        "variant_id": (
-                            item.variant_id
-                        ),
+                        "product_id": item.product_id,
+                        "variant_id": item.variant_id,
                         "error": str(exc),
                     }
                 )
@@ -629,13 +600,10 @@ class CartService:
         customer,
     ):
         """
-        Validate the active cart and raise ValueError
-        when the cart cannot proceed to checkout.
+        Return a valid active cart.
 
-        Returns
-        -------
-        Cart
-            Valid active cart.
+        Raise ValueError when the cart cannot proceed
+        to checkout.
         """
 
         cart = cls.get_active_cart(
@@ -677,6 +645,11 @@ class CartService:
         customer's active cart.
         """
 
+        item_id = cls._parse_uuid(
+            item_id,
+            "cart item ID",
+        )
+
         cart = cls.get_active_cart(
             customer,
         )
@@ -688,7 +661,7 @@ class CartService:
                 "variant",
             )
             .filter(
-                id=item_id,
+                pk=item_id,
             )
             .first()
         )
@@ -710,23 +683,13 @@ class CartService:
         product_id,
     ):
         """
-        Retrieve the product.
+        Retrieve a product using its UUID.
         """
 
-        try:
-
-            product_id = int(
-                product_id,
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            raise ValueError(
-                "Invalid product ID."
-            )
+        product_id = CartService._parse_uuid(
+            product_id,
+            "product ID",
+        )
 
         product = (
             Product.objects
@@ -757,23 +720,13 @@ class CartService:
         variant_id,
     ):
         """
-        Retrieve a product variant.
+        Retrieve a product variant using its UUID.
         """
 
-        try:
-
-            variant_id = int(
-                variant_id,
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            raise ValueError(
-                "Invalid variant ID."
-            )
+        variant_id = CartService._parse_uuid(
+            variant_id,
+            "variant ID",
+        )
 
         variant = (
             ProductVariant.objects
@@ -808,7 +761,7 @@ class CartService:
         to the selected product.
         """
 
-        if variant.product_id != product.id:
+        if variant.product_id != product.pk:
 
             raise ValueError(
                 "Selected variant does not "
@@ -907,15 +860,12 @@ class CartService:
         variant,
     ):
         """
-        Return the current price used when creating
-        a new CartItem.
+        Return the current price for a new cart item.
         """
 
         if variant is not None:
 
-            price = (
-                variant.effective_price
-            )
+            price = variant.effective_price
 
         else:
 
@@ -940,6 +890,43 @@ class CartService:
         return price
 
     # ==================================================
+    # UUID Parser
+    # ==================================================
+
+    @staticmethod
+    def _parse_uuid(
+        value,
+        field_name,
+    ):
+        """
+        Convert a value to UUID.
+
+        Accepts both:
+
+            UUID object
+
+        and:
+
+            UUID string
+        """
+
+        try:
+
+            return UUID(
+                str(value),
+            )
+
+        except (
+            TypeError,
+            ValueError,
+            AttributeError,
+        ):
+
+            raise ValueError(
+                f"Invalid {field_name}."
+            )
+
+    # ==================================================
     # Quantity Validation
     # ==================================================
 
@@ -948,7 +935,7 @@ class CartService:
         quantity,
     ):
         """
-        Normalize and validate a requested quantity.
+        Normalize and validate quantity.
         """
 
         try:

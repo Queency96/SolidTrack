@@ -1,7 +1,9 @@
 from django.db import transaction
+
 from deliveries.constants import DeliveryOfferAction
-from deliveries.models.delivery import (Delivery,) 
-from deliveries.models.delivery_offer import (DeliveryOffer,)   
+from deliveries.models.delivery import Delivery
+from deliveries.models.delivery_offer import DeliveryOffer
+
 from .assignment import AssignmentService
 from .context import DispatchContext
 from .events import (
@@ -46,9 +48,7 @@ class DispatchCoordinator:
     • Trigger dispatch failure notifications
     • Return standardized DispatchResult objects
 
-    Architecture
-    ------------
-    DispatchCoordinator orchestrates the dispatch lifecycle.
+    The coordinator orchestrates the dispatch lifecycle.
 
     It does NOT contain:
 
@@ -81,8 +81,10 @@ class DispatchCoordinator:
         """
         Handle a newly created delivery.
 
-        The delivery-created event is published before
-        dispatch begins.
+        The delivery-created event is published after
+        the current transaction commits.
+
+        Dispatch itself starts from this coordinator.
         """
 
         if delivery is None:
@@ -94,11 +96,20 @@ class DispatchCoordinator:
                 ],
             )
 
-        EventPublisher.publish(
-            DeliveryCreatedEvent(
-                delivery=delivery,
+        try:
+
+            EventPublisher.publish(
+                DeliveryCreatedEvent(
+                    delivery=delivery,
+                )
             )
-        )
+
+        except Exception:
+
+            # Event publication must not prevent the
+            # delivery from entering dispatch.
+
+            pass
 
         return cls.dispatch(
             delivery=delivery,
@@ -184,7 +195,7 @@ class DispatchCoordinator:
                 )
 
             # ------------------------------------------
-            # Load dispatch configuration
+            # Load configuration
             # ------------------------------------------
 
             config = (
@@ -205,10 +216,28 @@ class DispatchCoordinator:
 
             if attempt is None:
 
-                attempt = (
-                    cls._get_current_attempt(
-                        delivery,
-                    )
+                attempt = cls._get_current_attempt(
+                    delivery,
+                )
+
+            # ------------------------------------------
+            # Normalize attempt
+            # ------------------------------------------
+
+            try:
+
+                attempt = int(
+                    attempt,
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                raise DispatchConfigurationError(
+                    "Dispatch attempt must be "
+                    "a valid integer."
                 )
 
             # ------------------------------------------
@@ -253,7 +282,7 @@ class DispatchCoordinator:
             )
 
             # ------------------------------------------
-            # Merge explicit exclusions
+            # Explicit exclusions
             # ------------------------------------------
 
             if excluded_rider_ids:
@@ -286,7 +315,7 @@ class DispatchCoordinator:
             )
 
             # ------------------------------------------
-            # Dispatch metadata
+            # Metadata
             # ------------------------------------------
 
             context.add_metadata(
@@ -302,7 +331,7 @@ class DispatchCoordinator:
             )
 
             # ------------------------------------------
-            # Execute dispatch pipeline
+            # Execute pipeline
             # ------------------------------------------
 
             pipeline = DispatchPipeline(
@@ -312,7 +341,7 @@ class DispatchCoordinator:
             result = pipeline.run()
 
             # ------------------------------------------
-            # Handle pipeline failure
+            # Pipeline failure
             # ------------------------------------------
 
             if (
@@ -320,7 +349,7 @@ class DispatchCoordinator:
                 == DispatchStatus.FAILED
             ):
 
-                DispatchNotifier.notify_dispatch_failed(
+                cls._notify_dispatch_failed(
                     delivery,
                 )
 
@@ -373,21 +402,15 @@ class DispatchCoordinator:
         """
         Standardize dispatch failure handling.
 
-        Notification failure itself must not cause
-        dispatch failure handling to raise another
+        Failure notification must never cause another
         exception.
         """
 
         if delivery is not None:
 
-            try:
-
-                DispatchNotifier.notify_dispatch_failed(
-                    delivery,
-                )
-
-            except Exception:
-                pass
+            cls._notify_dispatch_failed(
+                delivery,
+            )
 
         return DispatchResult.failure_result(
             status=DispatchStatus.FAILED,
@@ -395,6 +418,31 @@ class DispatchCoordinator:
             delivery=delivery,
             errors=errors or [],
         )
+
+    # ==================================================
+    # Failure Notification
+    # ==================================================
+
+    @staticmethod
+    def _notify_dispatch_failed(
+        delivery,
+    ):
+        """
+        Safely notify that dispatch failed.
+
+        Notification failure must never propagate back
+        into dispatch processing.
+        """
+
+        try:
+
+            DispatchNotifier.notify_dispatch_failed(
+                delivery,
+            )
+
+        except Exception:
+
+            pass
 
     # ==================================================
     # Rider Response
@@ -478,13 +526,24 @@ class DispatchCoordinator:
         Accept an offer and create the corresponding
         rider assignment.
 
-        Offer acceptance and assignment creation are
-        performed atomically.
+        The delivery is locked first.
 
-        The delivery row is locked to prevent concurrent
-        acceptance of multiple offers for the same
-        delivery.
+        DeliveryOfferService.accept() is responsible
+        for locking and validating the offer itself.
+
+        Assignment creation and offer acceptance occur
+        within the same transaction.
         """
+
+        if offer is None:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message="Delivery offer is required.",
+                errors=[
+                    "Offer cannot be None.",
+                ],
+            )
 
         try:
 
@@ -503,7 +562,7 @@ class DispatchCoordinator:
                 )
 
                 # --------------------------------------
-                # Terminal delivery validation
+                # Terminal validation
                 # --------------------------------------
 
                 if cls._delivery_is_terminal(
@@ -537,12 +596,16 @@ class DispatchCoordinator:
                 )
 
                 # --------------------------------------
-                # Publish event
+                # Publish event after commit
                 # --------------------------------------
 
-                EventPublisher.publish(
-                    DeliveryOfferAcceptedEvent(
-                        assignment=assignment,
+                transaction.on_commit(
+                    lambda assignment=assignment: (
+                        EventPublisher.publish(
+                            DeliveryOfferAcceptedEvent(
+                                assignment=assignment,
+                            )
+                        )
                     )
                 )
 
@@ -617,13 +680,22 @@ class DispatchCoordinator:
         Reject the current offer.
 
         If automatic redispatch is enabled, the delivery
-        is immediately sent through a new dispatch
-        attempt.
+        is sent through another dispatch attempt.
 
-        The rejected rider is permanently excluded from
-        future dispatch attempts because DeliveryOffer
-        history is the persistent source of truth.
+        The rejected rider remains permanently excluded
+        because DeliveryOffer history is the persistent
+        source of truth.
         """
+
+        if offer is None:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message="Delivery offer is required.",
+                errors=[
+                    "Offer cannot be None.",
+                ],
+            )
 
         try:
 
@@ -642,7 +714,7 @@ class DispatchCoordinator:
             # Publish rejection event
             # ------------------------------------------
 
-            EventPublisher.publish(
+            cls._publish_after_commit(
                 DeliveryOfferRejectedEvent(
                     offer=rejected_offer,
                 )
@@ -652,112 +724,22 @@ class DispatchCoordinator:
             # Notify
             # ------------------------------------------
 
-            try:
-
-                DispatchNotifier.notify_offer_rejected(
-                    rejected_offer,
-                )
-
-            except Exception as exc:
-
-                # Notification failure should not prevent
-                # the rejection itself from succeeding.
-
-                pass
-
-            # ------------------------------------------
-            # Load configuration
-            # ------------------------------------------
-
-            config = (
-                DispatchConfigurationService
-                .get_configuration()
-            )
-
-            if config is None:
-
-                raise DispatchConfigurationError(
-                    "No active dispatch configuration "
-                    "is available."
-                )
-
-            # ------------------------------------------
-            # Automatic redispatch disabled
-            # ------------------------------------------
-
-            if not config.auto_redispatch:
-
-                return DispatchResult.success_result(
-                    status=DispatchStatus.REJECTED,
-                    message=(
-                        "Delivery offer rejected. "
-                        "Automatic redispatch is disabled."
-                    ),
-                    delivery=rejected_offer.delivery,
-                    offer=rejected_offer,
-                )
-
-            # ------------------------------------------
-            # Persistent exclusions
-            # ------------------------------------------
-
-            excluded_rider_ids = (
-                cls._get_excluded_rider_ids(
-                    delivery=rejected_offer.delivery,
-                )
+            cls._notify_offer_rejected(
+                rejected_offer,
             )
 
             # ------------------------------------------
             # Redispatch
             # ------------------------------------------
 
-            redispatch_result = cls.dispatch(
-                delivery=rejected_offer.delivery,
-                excluded_rider_ids=(
-                    excluded_rider_ids
-                ),
-                attempt=(
-                    cls._get_current_attempt(
-                        rejected_offer.delivery,
-                    )
+            return cls._redispatch_after_offer(
+                offer=rejected_offer,
+                status=DispatchStatus.REJECTED,
+                warning=(
+                    "Previous rider rejected "
+                    "the offer."
                 ),
             )
-
-            # ------------------------------------------
-            # Preserve previous offer information
-            # ------------------------------------------
-            #
-            # IMPORTANT:
-            #
-            # Do NOT replace redispatch_result.offer
-            # with rejected_offer.
-            #
-            # redispatch_result.offer should contain
-            # the NEW offer created for the next rider.
-
-            if redispatch_result.context is not None:
-
-                redispatch_result.context.add_metadata(
-                    "previous_offer_id",
-                    rejected_offer.id,
-                )
-
-                redispatch_result.context.add_metadata(
-                    "previous_offer_status",
-                    rejected_offer.status,
-                )
-
-                redispatch_result.context.add_warning(
-                    "Previous rider rejected the offer."
-                )
-
-            else:
-
-                redispatch_result.add_warning(
-                    "Previous rider rejected the offer."
-                )
-
-            return redispatch_result
 
         except InvalidOfferState as exc:
 
@@ -811,9 +793,18 @@ class DispatchCoordinator:
         Expire an offer and optionally redispatch.
 
         The expired rider remains excluded from future
-        attempts because DeliveryOffer history records
-        that rider's previous attempt.
+        dispatch attempts.
         """
+
+        if offer is None:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message="Delivery offer is required.",
+                errors=[
+                    "Offer cannot be None.",
+                ],
+            )
 
         try:
 
@@ -831,7 +822,7 @@ class DispatchCoordinator:
             # Publish expiration event
             # ------------------------------------------
 
-            EventPublisher.publish(
+            cls._publish_after_commit(
                 DeliveryOfferExpiredEvent(
                     offer=expired_offer,
                 )
@@ -841,108 +832,22 @@ class DispatchCoordinator:
             # Notify rider
             # ------------------------------------------
 
-            try:
-
-                DispatchNotifier.notify_offer_expired(
-                    expired_offer,
-                )
-
-            except Exception:
-
-                # Notification failure should not prevent
-                # expiration processing.
-                pass
-
-            # ------------------------------------------
-            # Load configuration
-            # ------------------------------------------
-
-            config = (
-                DispatchConfigurationService
-                .get_configuration()
-            )
-
-            if config is None:
-
-                raise DispatchConfigurationError(
-                    "No active dispatch configuration "
-                    "is available."
-                )
-
-            # ------------------------------------------
-            # Automatic redispatch disabled
-            # ------------------------------------------
-
-            if not config.auto_redispatch:
-
-                return DispatchResult.success_result(
-                    status=DispatchStatus.EXPIRED,
-                    message=(
-                        "Delivery offer expired. "
-                        "Automatic redispatch is disabled."
-                    ),
-                    delivery=expired_offer.delivery,
-                    offer=expired_offer,
-                )
-
-            # ------------------------------------------
-            # Persistent exclusions
-            # ------------------------------------------
-
-            excluded_rider_ids = (
-                cls._get_excluded_rider_ids(
-                    delivery=expired_offer.delivery,
-                )
+            cls._notify_offer_expired(
+                expired_offer,
             )
 
             # ------------------------------------------
             # Redispatch
             # ------------------------------------------
 
-            redispatch_result = cls.dispatch(
-                delivery=expired_offer.delivery,
-                excluded_rider_ids=(
-                    excluded_rider_ids
-                ),
-                attempt=(
-                    cls._get_current_attempt(
-                        expired_offer.delivery,
-                    )
+            return cls._redispatch_after_offer(
+                offer=expired_offer,
+                status=DispatchStatus.EXPIRED,
+                warning=(
+                    "Previous rider offer "
+                    "expired."
                 ),
             )
-
-            # ------------------------------------------
-            # Preserve previous offer information
-            # ------------------------------------------
-            #
-            # Do NOT replace redispatch_result.offer.
-            #
-            # The result's offer must remain the NEW
-            # offer generated by the redispatch pipeline.
-
-            if redispatch_result.context is not None:
-
-                redispatch_result.context.add_metadata(
-                    "previous_offer_id",
-                    expired_offer.id,
-                )
-
-                redispatch_result.context.add_metadata(
-                    "previous_offer_status",
-                    expired_offer.status,
-                )
-
-                redispatch_result.context.add_warning(
-                    "Previous rider offer expired."
-                )
-
-            else:
-
-                redispatch_result.add_warning(
-                    "Previous rider offer expired."
-                )
-
-            return redispatch_result
 
         except InvalidOfferState as exc:
 
@@ -982,6 +887,124 @@ class DispatchCoordinator:
                     str(exc),
                 ],
             )
+
+    # ==================================================
+    # Redispatch
+    # ==================================================
+
+    @classmethod
+    def _redispatch_after_offer(
+        cls,
+        offer,
+        status,
+        warning,
+    ):
+        """
+        Redispatch a delivery after an offer reaches a
+        terminal offer state.
+
+        The previous offer is never returned as the
+        current offer.
+
+        If redispatch succeeds:
+
+            result.offer
+
+        contains the NEW offer.
+
+        Metadata records the previous offer.
+        """
+
+        delivery = offer.delivery
+
+        # ----------------------------------------------
+        # Load configuration
+        # ----------------------------------------------
+
+        config = (
+            DispatchConfigurationService
+            .get_configuration()
+        )
+
+        if config is None:
+
+            raise DispatchConfigurationError(
+                "No active dispatch configuration "
+                "is available."
+            )
+
+        # ----------------------------------------------
+        # Automatic redispatch disabled
+        # ----------------------------------------------
+
+        if not config.auto_redispatch:
+
+            return DispatchResult.success_result(
+                status=status,
+                message=(
+                    f"Delivery offer "
+                    f"{status.lower()}. "
+                    "Automatic redispatch is disabled."
+                ),
+                delivery=delivery,
+                offer=offer,
+            )
+
+        # ----------------------------------------------
+        # Persistent exclusions
+        # ----------------------------------------------
+
+        excluded_rider_ids = (
+            cls._get_excluded_rider_ids(
+                delivery=delivery,
+            )
+        )
+
+        # ----------------------------------------------
+        # Next attempt
+        # ----------------------------------------------
+
+        attempt = cls._get_current_attempt(
+            delivery,
+        )
+
+        # ----------------------------------------------
+        # Redispatch
+        # ----------------------------------------------
+
+        redispatch_result = cls.dispatch(
+            delivery=delivery,
+            excluded_rider_ids=excluded_rider_ids,
+            attempt=attempt,
+        )
+
+        # ----------------------------------------------
+        # Preserve previous offer information
+        # ----------------------------------------------
+
+        if redispatch_result.context is not None:
+
+            redispatch_result.context.add_metadata(
+                "previous_offer_id",
+                offer.id,
+            )
+
+            redispatch_result.context.add_metadata(
+                "previous_offer_status",
+                offer.status,
+            )
+
+            redispatch_result.context.add_warning(
+                warning,
+            )
+
+        else:
+
+            redispatch_result.add_warning(
+                warning,
+            )
+
+        return redispatch_result
 
     # ==================================================
     # Cancel Offer
@@ -1062,6 +1085,77 @@ class DispatchCoordinator:
             )
 
     # ==================================================
+    # Event Publishing
+    # ==================================================
+
+    @staticmethod
+    def _publish_after_commit(
+        event,
+    ):
+        """
+        Publish an event after the current database
+        transaction successfully commits.
+
+        When called outside a transaction, Django's
+        current transaction is effectively committed
+        immediately, so the event is published normally.
+        """
+
+        transaction.on_commit(
+            lambda event=event: (
+                EventPublisher.publish(
+                    event,
+                )
+            )
+        )
+
+    # ==================================================
+    # Offer Notifications
+    # ==================================================
+
+    @staticmethod
+    def _notify_offer_rejected(
+        offer,
+    ):
+        """
+        Notify that an offer was rejected.
+
+        Notification failure must not invalidate the
+        persisted rejection.
+        """
+
+        try:
+
+            DispatchNotifier.notify_offer_rejected(
+                offer,
+            )
+
+        except Exception:
+
+            pass
+
+    @staticmethod
+    def _notify_offer_expired(
+        offer,
+    ):
+        """
+        Notify that an offer expired.
+
+        Notification failure must not invalidate the
+        persisted expiration.
+        """
+
+        try:
+
+            DispatchNotifier.notify_offer_expired(
+                offer,
+            )
+
+        except Exception:
+
+            pass
+
+    # ==================================================
     # Persistent Exclusions
     # ==================================================
 
@@ -1074,17 +1168,10 @@ class DispatchCoordinator:
         an offer for this delivery.
 
         DeliveryOffer is the persistent source of truth
-        for dispatch attempt history.
+        for rider dispatch history.
 
-        This means a rider who:
-
-            • rejected an offer
-            • allowed an offer to expire
-            • accepted an offer
-            • had an offer cancelled
-
-        is considered previously attempted if a
-        DeliveryOffer record exists.
+        Any rider with a DeliveryOffer record is treated
+        as previously attempted.
         """
 
         if delivery is None:
@@ -1116,16 +1203,16 @@ class DispatchCoordinator:
         Every historical DeliveryOffer represents one
         rider offer attempt.
 
-        Example
-        -------
-        No previous offers:
-            attempt = 1
+        Examples:
 
-        One previous offer:
-            attempt = 2
+            No previous offers:
+                attempt = 1
 
-        Two previous offers:
-            attempt = 3
+            One previous offer:
+                attempt = 2
+
+            Two previous offers:
+                attempt = 3
         """
 
         if delivery is None:

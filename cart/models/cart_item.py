@@ -28,7 +28,7 @@ class CartItem(models.Model):
     # ==================================================
 
     cart = models.ForeignKey(
-        "orders.Cart",
+        "cart.Cart",
         on_delete=models.CASCADE,
         related_name="items",
     )
