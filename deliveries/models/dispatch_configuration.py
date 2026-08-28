@@ -111,9 +111,14 @@ class DispatchConfiguration(TimeStampedModel):
         )
     )
 
-    max_assignment_attempts = (
+    max_rider_assignments = (
         models.PositiveSmallIntegerField(
-            default=5,
+            default=10,
+            help_text=(
+            "Maximum number of rider assignments "
+            "allowed for a delivery. "
+            "Use 0 for unlimited."
+            ),
         )
     )
 
