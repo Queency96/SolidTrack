@@ -156,8 +156,6 @@ class Delivery(TimeStampedModel):
         "order.OrderFulfillment",
         on_delete=models.PROTECT,
         related_name="delivery",
-        null=True,
-        blank=True,
     )
 
     # ==================================================
@@ -506,6 +504,7 @@ class Delivery(TimeStampedModel):
                     )
                 }
             )
+            
 
         # ----------------------------------------------
         # Customer
@@ -527,7 +526,7 @@ class Delivery(TimeStampedModel):
             )
 
         # ----------------------------------------------
-        # Store
+        # Pick-up Store
         # ----------------------------------------------
 
         if (

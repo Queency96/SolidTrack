@@ -3,7 +3,7 @@ from .order_item import OrderItem
 from .order_address import OrderAddress
 from .order_payment import OrderPayment
 from .order_fulfillment import OrderFulfillment
-from .package import Package
+from .package import Package, PackageItem
 
 
 __all__ = [
@@ -14,4 +14,5 @@ __all__ = [
   'Order',
   'Package',
   'OrderItem',
+  "PackageItem",
 ]

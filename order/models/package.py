@@ -5,6 +5,7 @@ from django.db import models
 from common.models import TimeStampedModel
 
 
+
 class Package(TimeStampedModel):
     """
     Represents one physical package prepared by a VendorStore
@@ -653,3 +654,113 @@ class Package(TimeStampedModel):
             self.Status.LOST,
             self.Status.DAMAGED,
         ]
+    
+    @property
+    def item_quantity(self):
+
+        return sum(
+            item.quantity
+            for item in self.items.all()
+        )
+    
+
+
+
+
+class PackageItem(models.Model):
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    package = models.ForeignKey(
+        "order.Package",
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+
+    order_item = models.ForeignKey(
+        "order.OrderItem",
+        on_delete=models.PROTECT,
+        related_name="package_items",
+    )
+
+    quantity = models.PositiveIntegerField(
+        default=1,
+    )
+
+    class Meta:
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "package",
+                    "order_item",
+                ],
+                name="unique_package_order_item",
+            ),
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "package",
+                ],
+            ),
+            models.Index(
+                fields=[
+                    "order_item",
+                ],
+            ),
+        ]
+
+    def clean(self):
+
+        if self.quantity <= 0:
+            raise ValidationError(
+                {
+                    "quantity": (
+                        "Quantity must be greater "
+                        "than zero."
+                    )
+                }
+            )
+
+        if self.package_id is None:
+            raise ValidationError(
+                {
+                    "package": (
+                        "Package is required."
+                    )
+                }
+            )
+
+        if self.order_item_id is None:
+            raise ValidationError(
+                {
+                    "order_item": (
+                        "Order item is required."
+                    )
+                }
+            )
+
+        if (
+            self.package.fulfillment_id
+            != self.order_item.fulfillment_id
+        ):
+            raise ValidationError(
+                {
+                    "order_item": (
+                        "Order item must belong "
+                        "to the package fulfillment."
+                    )
+                }
+            )
+
+    def save(self, *args, **kwargs):
+
+        self.full_clean()
+
+        super().save(*args, **kwargs)

@@ -3,12 +3,9 @@ from django.db import models
 
 class DispatchStatus(models.TextChoices):
     """
-    Lifecycle state of a dispatch operation.
+    Orchestration-level status of a dispatch operation.
 
-    DispatchStatus represents the orchestration-level state
-    of dispatch.
-
-    It should NOT replace:
+    DispatchStatus does NOT replace:
 
         DeliveryOffer.Status
 
@@ -16,8 +13,7 @@ class DispatchStatus(models.TextChoices):
 
         DeliveryAssignment.AssignmentStatus
 
-    Those models own their respective persistent
-    lifecycles.
+    Those models own their own persistent lifecycles.
     """
 
     # ==================================================

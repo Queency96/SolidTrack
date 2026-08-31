@@ -1,32 +1,42 @@
-from django.shortcuts import render
-from rest_framework.views import APIView
-from rest_framework.permissions import (IsAuthenticated)
-from rest_framework.response import Response
-from rest_framework import status
-from accounts.permissions import (IsCustomer)
-from .serializers import (DeliveryBookingSerializer, PriceEstimateSerializer)
-from .services import DeliveryService, PricingService
-from rest_framework.generics import GenericAPIView
-from deliveries.models.models import DeliveryOffer
-from dispatch.assignment import AssignmentService
-from dispatch.offer import DeliveryOfferService
-from dispatch.serializers import DeliveryOfferResponseSerializer
 from django.shortcuts import get_object_or_404
+from rest_framework import status
+from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from deliveries.models.models import DeliveryOffer
-from dispatch.serializers import DeliveryAssignmentSerializer
-from dispatch.offer import DeliveryOfferService
-from .serializers import DeliveryOfferResponseSerializer
+from rest_framework.views import APIView
+from accounts.permissions import IsCustomer
+from deliveries.models import DeliveryOffer
+from dispatch.coordinator import DispatchCoordinator
+from dispatch.serializers import (
+    DeliveryAssignmentSerializer,
+    DeliveryOfferResponseSerializer,
+)
+from .serializers import (
+    DeliveryBookingSerializer,
+    PriceEstimateSerializer,
+)
+from .services import (
+    DeliveryService,
+    PricingService,
+)
 
 
-
+# ==========================================================
+# Delivery Booking
+# ==========================================================
 
 class DeliveryBookingView(APIView):
+    """
+    Customer delivery booking endpoint.
+
+    POST /deliveries/book/
+    """
+
     permission_classes = (
         IsAuthenticated,
         IsCustomer,
     )
+
     def post(self, request):
         serializer = DeliveryBookingSerializer(
             data=request.data
@@ -44,24 +54,30 @@ class DeliveryBookingView(APIView):
         return Response(
             {
                 "success": True,
-                "tracking_number":
-                delivery.tracking_number,
+                "tracking_number": (
+                    delivery.tracking_number
+                ),
             },
             status=status.HTTP_201_CREATED,
         )
 
 
-
-
+# ==========================================================
+# Price Estimate
+# ==========================================================
 
 class PriceEstimateView(APIView):
+    """
+    Calculate an estimated delivery price.
+
+    POST /deliveries/price-estimate/
+    """
 
     permission_classes = (
         IsAuthenticated,
     )
 
     def post(self, request):
-
         serializer = PriceEstimateSerializer(
             data=request.data
         )
@@ -74,57 +90,128 @@ class PriceEstimateView(APIView):
             serializer.validated_data
         )
 
-        return Response(estimate)
+        return Response(
+            estimate,
+            status=status.HTTP_200_OK,
+        )
+
+
+# ==========================================================
+# Delivery Offer Response
+# ==========================================================
+
+from django.shortcuts import get_object_or_404
+
+from rest_framework import status
+from rest_framework.generics import GenericAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from deliveries.models.delivery_offer import DeliveryOffer
+
+from dispatch.coordinator import DispatchCoordinator
+from dispatch.serializers import (
+    DeliveryAssignmentSerializer,
+    DeliveryOfferResponseSerializer,
+)
 
 
 
 
 class DeliveryOfferResponseView(
-    GenericAPIView
+    GenericAPIView,
 ):
-    permission_classes = [
+    """
+    Allow an authenticated rider to respond to
+    their own pending delivery offer.
+    """
+
+    permission_classes = (
         IsAuthenticated,
-    ]
+    )
+
     serializer_class = (
         DeliveryOfferResponseSerializer
     )
+
     def post(
         self,
         request,
         pk,
     ):
+        # --------------------------------------------------
+        # Validate request
+        # --------------------------------------------------
+
         serializer = self.get_serializer(
             data=request.data,
         )
+
         serializer.is_valid(
             raise_exception=True,
         )
+
+        action = serializer.validated_data[
+            "action"
+        ]
+
+        rejection_reason = (
+            serializer.validated_data.get(
+                "rejection_reason",
+                "",
+            )
+        )
+
+        # --------------------------------------------------
+        # Get rider's own pending offer
+        # --------------------------------------------------
+
         offer = get_object_or_404(
             DeliveryOffer,
             pk=pk,
             rider=request.user,
-            status=DeliveryOffer.Status.PENDING,
-        )
-        result = DispatchCoordinator.respond_to_offer(
-            offer=offer,
-            action=action,
-            reason=reason,
+            status=(
+                DeliveryOffer.Status.PENDING
+            ),
         )
 
-        if result["status"] == "accepted":
+        # --------------------------------------------------
+        # Process through coordinator
+        # --------------------------------------------------
 
+        result = (
+            DispatchCoordinator
+            .respond_to_offer(
+                offer=offer,
+                action=action,
+                reason=rejection_reason,
+            )
+        )
+
+        # --------------------------------------------------
+        # Serialize standardized result
+        # --------------------------------------------------
+
+        response_data = (
+            DispatchResultSerializer(
+                result,
+                context={
+                    "request": request,
+                },
+            ).data
+        )
+
+        # --------------------------------------------------
+        # HTTP status
+        # --------------------------------------------------
+
+        if result.success:
             return Response(
-                {
-                    "success": True,
-                    "assignment":
-                    DeliveryAssignmentSerializer(
-                        result["assignment"]
-                    ).data,
-                }
+                response_data,
+                status=status.HTTP_200_OK,
             )
 
         return Response(
-            {
-                "success": True,
-            }
+            response_data,
+            status=status.HTTP_400_BAD_REQUEST,
         )

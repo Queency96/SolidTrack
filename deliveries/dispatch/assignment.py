@@ -1,47 +1,129 @@
 from django.db import transaction
 from django.utils import timezone
+
 from deliveries.models import (
     Delivery,
     DeliveryAssignment,
     DeliveryOffer,
 )
 from riders.models import RiderProfile
+
 from .exceptions import (
     AssignmentAlreadyExists,
     InvalidAssignmentState,
 )
+from .service import DispatchConfigurationService
 
 
 class AssignmentService:
     """
-    Handles the complete lifecycle of a delivery assignment.
+    Handles the lifecycle of DeliveryAssignment.
 
-    Responsibilities
-    ----------------
-    • Create assignments
-    • Accept assignments
-    • Move riders through delivery states
-    • Complete deliveries
-    • Cancel assignments
-    • Validate reassignment
-    • Update delivery status
-    • Manage rider availability
-    • Cancel competing delivery offers
-    • Trigger assignment notifications
+    ============================================================
+    CORE BUSINESS RULE
+    ============================================================
 
-    Concurrency
-    -----------
-    Assignment operations lock the relevant delivery,
-    assignment, and rider profile rows before changing
-    state.
+    A delivery has EXACTLY ONE lifetime assignment record.
 
-    The RiderProfile row is the synchronization point
-    for rider availability.
+    Example:
+
+        Delivery #100
+
+            Assignment #1
+                Rider A
+                ↓
+                CANCELLED
+                ↓
+                restarted by admin
+                ↓
+                Rider B
+                ↓
+                ASSIGNED
+                ↓
+                COMPLETED
+
+    Assignment #2 is NEVER created.
+
+    The same DeliveryAssignment database row is reused when an
+    administrator explicitly restarts a previously cancelled
+    assignment.
+
+    ============================================================
+    BUSINESS RULES
+    ============================================================
+
+    1. A delivery may have a maximum of ONE
+       DeliveryAssignment record for its entire lifetime.
+
+    2. max_rider_assignments = 1.
+
+    3. DeliveryOffer and DeliveryAssignment are different.
+
+       DeliveryOffer:
+           Temporary invitation to a rider.
+
+       DeliveryAssignment:
+           The single lifetime assignment record.
+
+    4. Rider may:
+
+           - Accept a DeliveryOffer
+           - Reject a DeliveryOffer
+           - Allow a DeliveryOffer to expire
+           - Cancel a pending DeliveryOffer
+
+    5. Rider may NOT cancel a DeliveryAssignment.
+
+    6. Admin/staff may cancel an assignment according to the
+       cancellation rules.
+
+    7. Cancelling an assignment does NOT create a new assignment
+       slot.
+
+    8. A cancelled assignment remains the SAME assignment row.
+
+    9. Admin/staff may explicitly restart a cancelled assignment.
+
+    10. Restarting does NOT create a new DeliveryAssignment.
+
+    11. After restart:
+
+            Delivery
+                ↓
+            WAITING_FOR_RIDER
+                ↓
+            new DeliveryOffer
+                ↓
+            rider accepts
+                ↓
+            existing Assignment #1 is reused
+
+    12. No second DeliveryAssignment row can ever exist.
+
+    ============================================================
+    CONCURRENCY
+    ============================================================
+
+    Delivery is the synchronization point for assignment
+    creation/reuse.
+
+        SELECT FOR UPDATE delivery
+                    ↓
+        inspect existing assignment
+                    ↓
+        create OR reuse Assignment #1
+                    ↓
+        update rider
+                    ↓
+        update delivery
+
+    Therefore concurrent assignment attempts for the same
+    delivery are serialized.
     """
 
-    # ==================================================
-    # Assignment Status Groups
-    # ==================================================
+    # ============================================================
+    # ASSIGNMENT STATUS GROUPS
+    # ============================================================
 
     ACTIVE_ASSIGNMENT_STATUSES = (
         DeliveryAssignment.AssignmentStatus.ASSIGNED,
@@ -53,21 +135,29 @@ class AssignmentService:
         DeliveryAssignment.AssignmentStatus.ARRIVED_DESTINATION,
     )
 
-    # Cancellation is intentionally restricted to the
-    # pre-pickup portion of the assignment lifecycle.
-    CANCELLABLE_STATUSES = (
+    # ------------------------------------------------------------
+    # ADMIN CANCELLABLE STATES
+    # ------------------------------------------------------------
+
+    ADMIN_CANCELLABLE_STATUSES = (
         DeliveryAssignment.AssignmentStatus.ASSIGNED,
         DeliveryAssignment.AssignmentStatus.ACCEPTED,
         DeliveryAssignment.AssignmentStatus.EN_ROUTE_PICKUP,
         DeliveryAssignment.AssignmentStatus.ARRIVED_PICKUP,
     )
 
-    # A delivery can receive a new assignment only
-    # while waiting to be dispatched.
+    # ------------------------------------------------------------
+    # Delivery states that may receive an assignment.
+    # ------------------------------------------------------------
+
     ASSIGNABLE_DELIVERY_STATUSES = (
         Delivery.DeliveryStatus.PENDING,
         Delivery.DeliveryStatus.WAITING_FOR_RIDER,
     )
+
+    # ------------------------------------------------------------
+    # Terminal delivery states.
+    # ------------------------------------------------------------
 
     TERMINAL_DELIVERY_STATUSES = (
         Delivery.DeliveryStatus.DELIVERED,
@@ -75,9 +165,9 @@ class AssignmentService:
         Delivery.DeliveryStatus.FAILED,
     )
 
-    # ==================================================
-    # Assign
-    # ==================================================
+    # ============================================================
+    # ASSIGN
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -88,103 +178,316 @@ class AssignmentService:
         assigned_by=None,
     ):
         """
-        Create a new rider assignment.
+        Create OR reuse the single lifetime assignment.
 
-        Delivery:
-            PENDING / WAITING_FOR_RIDER
-                ↓
-            RIDER_ASSIGNED
+        FIRST DISPATCH
+        --------------
 
-        Assignment:
-            → ASSIGNED
+        If no DeliveryAssignment exists:
 
-        The delivery and rider profile are locked before
-        validation so that two concurrent dispatch
-        operations cannot assign the same rider/delivery.
+            create Assignment #1
+
+        RESTARTED DISPATCH
+        ------------------
+
+        If Assignment #1 exists but is CANCELLED and the delivery
+        was explicitly restarted by admin/staff:
+
+            reuse Assignment #1
+
+        NEVER:
+
+            create Assignment #2
         """
 
-        # ----------------------------------------------
+        # --------------------------------------------------------
         # Lock delivery
-        # ----------------------------------------------
+        # --------------------------------------------------------
 
         delivery = cls._lock_delivery(
             delivery,
         )
 
-        # ----------------------------------------------
+        # --------------------------------------------------------
         # Validate delivery
-        # ----------------------------------------------
+        # --------------------------------------------------------
 
         cls._ensure_delivery_assignable(
             delivery,
         )
 
-        # ----------------------------------------------
-        # Lock rider/profile
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # Configuration
+        # --------------------------------------------------------
+
+        config = (
+            DispatchConfigurationService
+            .get_configuration()
+        )
+
+        if config is None:
+            raise InvalidAssignmentState(
+                "No active dispatch configuration "
+                "is available."
+            )
+
+        # --------------------------------------------------------
+        # Lifetime assignment limit
+        # --------------------------------------------------------
+
+        maximum = (
+            cls._get_maximum_rider_assignments(
+                config,
+            )
+        )
+
+        # --------------------------------------------------------
+        # Existing lifetime assignment
+        # --------------------------------------------------------
+
+        existing_assignment = (
+            DeliveryAssignment.objects
+            .select_for_update()
+            .filter(
+                delivery=delivery,
+            )
+            .first()
+        )
+
+        # --------------------------------------------------------
+        # No assignment yet
+        # --------------------------------------------------------
+
+        if existing_assignment is None:
+
+            if maximum > 0:
+
+                assignment_count = (
+                    cls._get_assignment_count(
+                        delivery,
+                    )
+                )
+
+                if assignment_count >= maximum:
+
+                    raise InvalidAssignmentState(
+                        "Maximum rider assignment limit "
+                        "has been reached for this delivery."
+                    )
+
+            assignment = None
+
+        # --------------------------------------------------------
+        # Existing assignment
+        # --------------------------------------------------------
+
+        else:
+
+            # ----------------------------------------------------
+            # Active assignment already exists.
+            # ----------------------------------------------------
+
+            if (
+                existing_assignment.status
+                in cls.ACTIVE_ASSIGNMENT_STATUSES
+                and existing_assignment.is_active
+            ):
+                raise AssignmentAlreadyExists(
+                    "Delivery already has an active "
+                    "rider assignment."
+                )
+
+            # ----------------------------------------------------
+            # Completed assignment can NEVER be reused.
+            # ----------------------------------------------------
+
+            if (
+                existing_assignment.status
+                == DeliveryAssignment.AssignmentStatus.COMPLETED
+            ):
+                raise AssignmentAlreadyExists(
+                    "Delivery assignment has already "
+                    "been completed and cannot be reused."
+                )
+
+            # ----------------------------------------------------
+            # Only CANCELLED assignment may be reused.
+            # ----------------------------------------------------
+
+            if (
+                existing_assignment.status
+                != DeliveryAssignment.AssignmentStatus.CANCELLED
+            ):
+                raise AssignmentAlreadyExists(
+                    "Delivery already has a rider assignment. "
+                    "A second assignment is not permitted."
+                )
+
+            # ----------------------------------------------------
+            # Delivery must have been explicitly reopened.
+            #
+            # WAITING_FOR_RIDER is the dispatch-ready state.
+            # ----------------------------------------------------
+
+            if (
+                delivery.status
+                != Delivery.DeliveryStatus.WAITING_FOR_RIDER
+            ):
+                raise InvalidAssignmentState(
+                    "The cancelled assignment has not been "
+                    "restarted by admin/staff."
+                )
+
+            assignment = existing_assignment
+
+        # --------------------------------------------------------
+        # Lock rider
+        # --------------------------------------------------------
 
         rider, rider_profile = cls._lock_rider(
             rider,
         )
 
-        # ----------------------------------------------
+        # --------------------------------------------------------
         # Validate rider
-        # ----------------------------------------------
+        # --------------------------------------------------------
 
         cls._ensure_rider_assignable(
             rider=rider,
             profile=rider_profile,
+            exclude_assignment=assignment,
         )
 
-        # ----------------------------------------------
-        # Create assignment
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # CREATE FIRST ASSIGNMENT
+        # --------------------------------------------------------
 
-        assignment = DeliveryAssignment.objects.create(
-            delivery=delivery,
-            rider=rider,
-            assigned_by=assigned_by,
-            status=(
+        if assignment is None:
+
+            assignment = DeliveryAssignment.objects.create(
+                delivery=delivery,
+                rider=rider,
+                assigned_by=assigned_by,
+                status=(
+                    DeliveryAssignment
+                    .AssignmentStatus
+                    .ASSIGNED
+                ),
+                is_active=True,
+            )
+
+        # --------------------------------------------------------
+        # REUSE CANCELLED ASSIGNMENT
+        # --------------------------------------------------------
+
+        else:
+
+            assignment.rider = rider
+            assignment.assigned_by = assigned_by
+
+            assignment.status = (
                 DeliveryAssignment
                 .AssignmentStatus
                 .ASSIGNED
-            ),
-            is_active=True,
-        )
+            )
 
-        # ----------------------------------------------
-        # Rider → unavailable
-        # ----------------------------------------------
+            assignment.is_active = True
+
+            # ----------------------------------------------------
+            # Clear fields belonging to the previous active
+            # lifecycle.
+            # ----------------------------------------------------
+
+            if hasattr(
+                assignment,
+                "accepted_at",
+            ):
+                assignment.accepted_at = None
+
+            if hasattr(
+                assignment,
+                "completed_at",
+            ):
+                assignment.completed_at = None
+
+            # ----------------------------------------------------
+            # IMPORTANT:
+            #
+            # We intentionally do NOT clear cancelled_at or
+            # cancellation_reason if those fields are intended
+            # as audit information.
+            #
+            # The current assignment lifecycle is ASSIGNED,
+            # while the cancellation timestamp remains historical.
+            # ----------------------------------------------------
+
+            update_fields = [
+                "rider",
+                "assigned_by",
+                "status",
+                "is_active",
+            ]
+
+            if hasattr(
+                assignment,
+                "accepted_at",
+            ):
+                update_fields.append(
+                    "accepted_at",
+                )
+
+            if hasattr(
+                assignment,
+                "completed_at",
+            ):
+                update_fields.append(
+                    "completed_at",
+                )
+
+            if hasattr(
+                assignment,
+                "updated_at",
+            ):
+                update_fields.append(
+                    "updated_at",
+                )
+
+            assignment.save(
+                update_fields=update_fields,
+            )
+
+        # --------------------------------------------------------
+        # Rider becomes unavailable.
+        # --------------------------------------------------------
 
         cls._set_rider_availability(
             profile=rider_profile,
             available=False,
         )
 
-        # ----------------------------------------------
-        # Delivery → rider assigned
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # Delivery becomes assigned.
+        # --------------------------------------------------------
 
         cls._update_delivery_status(
             delivery=delivery,
             status=(
-                Delivery.DeliveryStatus
-                .RIDER_ASSIGNED
+                Delivery.DeliveryStatus.RIDER_ASSIGNED
             ),
         )
 
-        # ----------------------------------------------
-        # Cancel competing offers
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # Cancel competing offers.
+        # --------------------------------------------------------
 
         cls._cancel_pending_offers(
             delivery=delivery,
             accepted_rider=rider,
         )
 
-        # ----------------------------------------------
-        # Notifications
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # Notifications.
+        # --------------------------------------------------------
 
         cls._schedule_assignment_notifications(
             assignment,
@@ -192,9 +495,121 @@ class AssignmentService:
 
         return assignment
 
-    # ==================================================
-    # Accept
-    # ==================================================
+    # ============================================================
+    # ADMIN / STAFF RESTART CANCELLED ASSIGNMENT
+    # ============================================================
+
+    @classmethod
+    @transaction.atomic
+    def restart_cancelled_assignment(
+        cls,
+        assignment,
+        restarted_by,
+    ):
+        """
+        Explicitly restart the existing Assignment #1.
+
+        This DOES NOT create a new DeliveryAssignment.
+
+        Example:
+
+            Assignment #1
+                CANCELLED
+                    ↓
+                admin restart
+                    ↓
+                WAITING_FOR_RIDER
+                    ↓
+                new rider offer
+
+        The assignment remains cancelled until a rider actually
+        accepts a new DeliveryOffer.
+
+        This is important because restarting the delivery should
+        NOT automatically assign a rider.
+
+        It only makes the delivery eligible for dispatch again.
+        """
+
+        # --------------------------------------------------------
+        # Validate administrator/staff.
+        # --------------------------------------------------------
+
+        cls._ensure_admin_or_staff(
+            restarted_by,
+        )
+
+        # --------------------------------------------------------
+        # Lock assignment.
+        # --------------------------------------------------------
+
+        assignment = cls._lock_assignment(
+            assignment,
+        )
+
+        # --------------------------------------------------------
+        # Assignment must be cancelled.
+        # --------------------------------------------------------
+
+        if (
+            assignment.status
+            != DeliveryAssignment.AssignmentStatus.CANCELLED
+        ):
+            raise InvalidAssignmentState(
+                "Only a cancelled assignment can be restarted."
+            )
+
+        # --------------------------------------------------------
+        # Lock delivery.
+        # --------------------------------------------------------
+
+        delivery = cls._lock_delivery(
+            assignment.delivery,
+        )
+
+        # --------------------------------------------------------
+        # Delivery cannot be terminal.
+        # --------------------------------------------------------
+
+        if delivery.status in (
+            Delivery.DeliveryStatus.DELIVERED,
+            Delivery.DeliveryStatus.FAILED,
+        ):
+            raise InvalidAssignmentState(
+                f"Delivery with status "
+                f"'{delivery.status}' cannot be restarted."
+            )
+
+        # --------------------------------------------------------
+        # Cancel any stale pending offers.
+        # --------------------------------------------------------
+
+        cls._cancel_all_pending_offers(
+            delivery=delivery,
+        )
+
+        # --------------------------------------------------------
+        # Delivery becomes ready for dispatch.
+        # --------------------------------------------------------
+
+        cls._update_delivery_status(
+            delivery=delivery,
+            status=(
+                Delivery.DeliveryStatus
+                .WAITING_FOR_RIDER
+            ),
+        )
+
+        # --------------------------------------------------------
+        # Assignment itself remains CANCELLED until a rider
+        # accepts a new offer.
+        # --------------------------------------------------------
+
+        return assignment
+
+    # ============================================================
+    # ACCEPT ASSIGNMENT
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -203,22 +618,18 @@ class AssignmentService:
         assignment,
     ):
         """
-        Rider accepts an assigned delivery.
+        Move:
 
-        Assignment:
             ASSIGNED → ACCEPTED
 
         Delivery:
+
             RIDER_ASSIGNED → RIDER_ACCEPTED
         """
 
         assignment = cls._lock_assignment(
             assignment,
         )
-
-        # ----------------------------------------------
-        # Validate assignment
-        # ----------------------------------------------
 
         cls._ensure_status(
             assignment,
@@ -229,26 +640,14 @@ class AssignmentService:
             assignment,
         )
 
-        # ----------------------------------------------
-        # Lock delivery
-        # ----------------------------------------------
-
         delivery = cls._lock_delivery(
             assignment.delivery,
         )
-
-        # ----------------------------------------------
-        # Validate delivery state
-        # ----------------------------------------------
 
         cls._ensure_delivery_status(
             delivery,
             Delivery.DeliveryStatus.RIDER_ASSIGNED,
         )
-
-        # ----------------------------------------------
-        # Update assignment
-        # ----------------------------------------------
 
         assignment = cls._update_assignment_status(
             assignment=assignment,
@@ -260,10 +659,6 @@ class AssignmentService:
             accepted_at=timezone.now(),
         )
 
-        # ----------------------------------------------
-        # Delivery → rider accepted
-        # ----------------------------------------------
-
         cls._update_delivery_status(
             delivery=delivery,
             status=(
@@ -274,9 +669,9 @@ class AssignmentService:
 
         return assignment
 
-    # ==================================================
-    # Start Pickup
-    # ==================================================
+    # ============================================================
+    # START PICKUP
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -285,13 +680,7 @@ class AssignmentService:
         assignment,
     ):
         """
-        Rider starts travelling toward pickup.
-
-        Assignment:
-            ACCEPTED → EN_ROUTE_PICKUP
-
-        Delivery:
-            remains RIDER_ACCEPTED
+        ACCEPTED → EN_ROUTE_PICKUP
         """
 
         assignment = cls._lock_assignment(
@@ -325,9 +714,9 @@ class AssignmentService:
             ),
         )
 
-    # ==================================================
-    # Arrive Pickup
-    # ==================================================
+    # ============================================================
+    # ARRIVE PICKUP
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -336,13 +725,7 @@ class AssignmentService:
         assignment,
     ):
         """
-        Rider arrives at pickup.
-
-        Assignment:
-            EN_ROUTE_PICKUP → ARRIVED_PICKUP
-
-        Delivery:
-            remains RIDER_ACCEPTED
+        EN_ROUTE_PICKUP → ARRIVED_PICKUP
         """
 
         assignment = cls._lock_assignment(
@@ -351,11 +734,7 @@ class AssignmentService:
 
         cls._ensure_status(
             assignment,
-            (
-                DeliveryAssignment
-                .AssignmentStatus
-                .EN_ROUTE_PICKUP
-            ),
+            DeliveryAssignment.AssignmentStatus.EN_ROUTE_PICKUP,
         )
 
         cls._ensure_assignment_active(
@@ -380,9 +759,9 @@ class AssignmentService:
             ),
         )
 
-    # ==================================================
-    # Pickup Completed
-    # ==================================================
+    # ============================================================
+    # PICKUP COMPLETED
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -391,13 +770,7 @@ class AssignmentService:
         assignment,
     ):
         """
-        Package has been collected.
-
-        Assignment:
-            ARRIVED_PICKUP → PICKED_UP
-
-        Delivery:
-            RIDER_ACCEPTED → PICKED_UP
+        ARRIVED_PICKUP → PICKED_UP
         """
 
         assignment = cls._lock_assignment(
@@ -406,11 +779,7 @@ class AssignmentService:
 
         cls._ensure_status(
             assignment,
-            (
-                DeliveryAssignment
-                .AssignmentStatus
-                .ARRIVED_PICKUP
-            ),
+            DeliveryAssignment.AssignmentStatus.ARRIVED_PICKUP,
         )
 
         cls._ensure_assignment_active(
@@ -426,10 +795,6 @@ class AssignmentService:
             Delivery.DeliveryStatus.RIDER_ACCEPTED,
         )
 
-        # ----------------------------------------------
-        # Assignment → picked up
-        # ----------------------------------------------
-
         assignment = cls._update_assignment_status(
             assignment=assignment,
             status=(
@@ -439,23 +804,18 @@ class AssignmentService:
             ),
         )
 
-        # ----------------------------------------------
-        # Delivery → picked up
-        # ----------------------------------------------
-
         cls._update_delivery_status(
             delivery=delivery,
             status=(
-                Delivery.DeliveryStatus
-                .PICKED_UP
+                Delivery.DeliveryStatus.PICKED_UP
             ),
         )
 
         return assignment
 
-    # ==================================================
-    # Start Delivery
-    # ==================================================
+    # ============================================================
+    # START DELIVERY
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -464,13 +824,7 @@ class AssignmentService:
         assignment,
     ):
         """
-        Rider starts travelling to destination.
-
-        Assignment:
-            PICKED_UP → OUT_FOR_DELIVERY
-
-        Delivery:
-            PICKED_UP → IN_TRANSIT
+        PICKED_UP → OUT_FOR_DELIVERY
         """
 
         assignment = cls._lock_assignment(
@@ -479,11 +833,7 @@ class AssignmentService:
 
         cls._ensure_status(
             assignment,
-            (
-                DeliveryAssignment
-                .AssignmentStatus
-                .PICKED_UP
-            ),
+            DeliveryAssignment.AssignmentStatus.PICKED_UP,
         )
 
         cls._ensure_assignment_active(
@@ -499,10 +849,6 @@ class AssignmentService:
             Delivery.DeliveryStatus.PICKED_UP,
         )
 
-        # ----------------------------------------------
-        # Assignment → out for delivery
-        # ----------------------------------------------
-
         assignment = cls._update_assignment_status(
             assignment=assignment,
             status=(
@@ -512,23 +858,18 @@ class AssignmentService:
             ),
         )
 
-        # ----------------------------------------------
-        # Delivery → in transit
-        # ----------------------------------------------
-
         cls._update_delivery_status(
             delivery=delivery,
             status=(
-                Delivery.DeliveryStatus
-                .IN_TRANSIT
+                Delivery.DeliveryStatus.IN_TRANSIT
             ),
         )
 
         return assignment
 
-    # ==================================================
-    # Arrive Destination
-    # ==================================================
+    # ============================================================
+    # ARRIVE DESTINATION
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -537,13 +878,7 @@ class AssignmentService:
         assignment,
     ):
         """
-        Rider arrives at destination.
-
-        Assignment:
-            OUT_FOR_DELIVERY → ARRIVED_DESTINATION
-
-        Delivery:
-            remains IN_TRANSIT
+        OUT_FOR_DELIVERY → ARRIVED_DESTINATION
         """
 
         assignment = cls._lock_assignment(
@@ -552,11 +887,7 @@ class AssignmentService:
 
         cls._ensure_status(
             assignment,
-            (
-                DeliveryAssignment
-                .AssignmentStatus
-                .OUT_FOR_DELIVERY
-            ),
+            DeliveryAssignment.AssignmentStatus.OUT_FOR_DELIVERY,
         )
 
         cls._ensure_assignment_active(
@@ -581,9 +912,9 @@ class AssignmentService:
             ),
         )
 
-    # ==================================================
-    # Complete
-    # ==================================================
+    # ============================================================
+    # COMPLETE
+    # ============================================================
 
     @classmethod
     @transaction.atomic
@@ -592,13 +923,10 @@ class AssignmentService:
         assignment,
     ):
         """
-        Complete the delivery.
+        ARRIVED_DESTINATION → COMPLETED
 
-        Assignment:
-            ARRIVED_DESTINATION → COMPLETED
-
-        Delivery:
-            IN_TRANSIT → DELIVERED
+        Once completed, the lifetime assignment is permanently
+        consumed and cannot be restarted.
         """
 
         assignment = cls._lock_assignment(
@@ -607,11 +935,7 @@ class AssignmentService:
 
         cls._ensure_status(
             assignment,
-            (
-                DeliveryAssignment
-                .AssignmentStatus
-                .ARRIVED_DESTINATION
-            ),
+            DeliveryAssignment.AssignmentStatus.ARRIVED_DESTINATION,
         )
 
         cls._ensure_assignment_active(
@@ -629,10 +953,6 @@ class AssignmentService:
 
         now = timezone.now()
 
-        # ----------------------------------------------
-        # Assignment → completed
-        # ----------------------------------------------
-
         assignment = cls._update_assignment_status(
             assignment=assignment,
             status=(
@@ -644,21 +964,12 @@ class AssignmentService:
             is_active=False,
         )
 
-        # ----------------------------------------------
-        # Delivery → delivered
-        # ----------------------------------------------
-
         cls._update_delivery_status(
             delivery=delivery,
             status=(
-                Delivery.DeliveryStatus
-                .DELIVERED
+                Delivery.DeliveryStatus.DELIVERED
             ),
         )
-
-        # ----------------------------------------------
-        # Rider → available if free
-        # ----------------------------------------------
 
         cls._set_rider_availability_if_free(
             assignment.rider,
@@ -666,36 +977,58 @@ class AssignmentService:
 
         return assignment
 
-    # ==================================================
-    # Cancel
-    # ==================================================
+    # ============================================================
+    # ADMIN / STAFF CANCEL
+    # ============================================================
 
     @classmethod
     @transaction.atomic
-    def cancel(
+    def cancel_by_admin(
         cls,
         assignment,
+        cancelled_by,
         reason="",
     ):
         """
-        Cancel an active assignment before pickup.
+        Cancel the current assignment lifecycle.
 
-        Assignment:
-            active → CANCELLED
+        IMPORTANT:
 
-        Delivery:
-            → WAITING_FOR_RIDER
+        This does NOT create another assignment slot.
 
-        The delivery itself is NOT cancelled.
+        The same Assignment #1 may later be restarted by
+        admin/staff.
+
+            Assignment #1
+                ASSIGNED
+                    ↓
+                CANCELLED
+                    ↓
+                admin restart
+                    ↓
+                ASSIGNED
         """
+
+        cls._ensure_admin_or_staff(
+            cancelled_by,
+        )
 
         assignment = cls._lock_assignment(
             assignment,
         )
 
-        cls._ensure_cancellable(
+        cls._ensure_assignment_active(
             assignment,
         )
+
+        if assignment.status not in (
+            cls.ADMIN_CANCELLABLE_STATUSES
+        ):
+            raise InvalidAssignmentState(
+                f"Assignment with status "
+                f"'{assignment.status}' "
+                f"cannot be cancelled by admin/staff."
+            )
 
         delivery = cls._lock_delivery(
             assignment.delivery,
@@ -706,10 +1039,6 @@ class AssignmentService:
         )
 
         now = timezone.now()
-
-        # ----------------------------------------------
-        # Assignment → cancelled
-        # ----------------------------------------------
 
         assignment = cls._update_assignment_status(
             assignment=assignment,
@@ -723,70 +1052,45 @@ class AssignmentService:
             is_active=False,
         )
 
-        # ----------------------------------------------
-        # Delivery → waiting for rider
-        # ----------------------------------------------
+        # --------------------------------------------------------
+        # IMPORTANT:
+        #
+        # We DO NOT create a new assignment.
+        #
+        # We also do not automatically reopen the delivery.
+        #
+        # Admin/staff must explicitly call:
+        #
+        #     restart_cancelled_assignment()
+        #
+        # when they are ready for dispatch again.
+        # --------------------------------------------------------
 
         cls._update_delivery_status(
             delivery=delivery,
             status=(
-                Delivery.DeliveryStatus
-                .WAITING_FOR_RIDER
+                Delivery.DeliveryStatus.CANCELLED
             ),
         )
-
-        # ----------------------------------------------
-        # Rider → available if free
-        # ----------------------------------------------
 
         cls._set_rider_availability_if_free(
             assignment.rider,
         )
 
-        return assignment
+        cls._cancel_all_pending_offers(
+            delivery=delivery,
+        )
 
-    # ==================================================
-    # Reassign
-    # ==================================================
-
-    @classmethod
-    @transaction.atomic
-    def reassign(
-        cls,
-        assignment,
-    ):
-        """
-        Validate that a cancelled assignment can be
-        handed back to the dispatch system.
-
-        This method does not create a new assignment.
-
-        DispatchCoordinator is responsible for starting
-        the new dispatch lifecycle.
-        """
-
-        assignment = cls._lock_assignment(
+        cls._schedule_assignment_cancelled_notifications(
             assignment,
-        )
-
-        cls._ensure_reassignable(
-            assignment,
-        )
-
-        delivery = cls._lock_delivery(
-            assignment.delivery,
-        )
-
-        cls._ensure_delivery_status(
-            delivery,
-            Delivery.DeliveryStatus.WAITING_FOR_RIDER,
+            cancelled_by=cancelled_by,
         )
 
         return assignment
 
-    # ==================================================
-    # Lock Delivery
-    # ==================================================
+    # ============================================================
+    # LOCK DELIVERY
+    # ============================================================
 
     @staticmethod
     def _lock_delivery(
@@ -795,9 +1099,8 @@ class AssignmentService:
         """
         Lock the delivery row.
 
-        The delivery row is the synchronization point
-        for assignment operations involving the same
-        delivery.
+        The delivery row is the synchronization point for
+        assignment creation/reuse.
         """
 
         if delivery is None:
@@ -825,16 +1128,16 @@ class AssignmentService:
                 "Delivery does not exist."
             )
 
-    # ==================================================
-    # Lock Assignment
-    # ==================================================
+    # ============================================================
+    # LOCK ASSIGNMENT
+    # ============================================================
 
     @staticmethod
     def _lock_assignment(
         assignment,
     ):
         """
-        Lock the assignment row before changing state.
+        Lock assignment row before changing state.
         """
 
         if assignment is None:
@@ -866,18 +1169,19 @@ class AssignmentService:
                 "Assignment does not exist."
             )
 
-    # ==================================================
-    # Lock Rider
-    # ==================================================
+    # ============================================================
+    # LOCK RIDER
+    # ============================================================
 
     @staticmethod
     def _lock_rider(
         rider,
     ):
         """
-        Lock the RiderProfile row.
+        Lock RiderProfile.
 
         Returns:
+
             (rider_user, rider_profile)
         """
 
@@ -909,16 +1213,16 @@ class AssignmentService:
 
         return profile.user, profile
 
-    # ==================================================
-    # Assignment Active Validation
-    # ==================================================
+    # ============================================================
+    # ASSIGNMENT ACTIVE VALIDATION
+    # ============================================================
 
     @staticmethod
     def _ensure_assignment_active(
         assignment,
     ):
         """
-        Ensure the assignment is still active.
+        Ensure assignment is currently active.
         """
 
         if not assignment.is_active:
@@ -926,9 +1230,9 @@ class AssignmentService:
                 "Assignment is inactive."
             )
 
-    # ==================================================
-    # Delivery Validation
-    # ==================================================
+    # ============================================================
+    # DELIVERY VALIDATION
+    # ============================================================
 
     @classmethod
     def _ensure_delivery_not_terminal(
@@ -936,8 +1240,7 @@ class AssignmentService:
         delivery,
     ):
         """
-        Ensure the delivery has not reached a terminal
-        state.
+        Ensure delivery is not terminal.
         """
 
         if delivery.status in (
@@ -954,8 +1257,13 @@ class AssignmentService:
         delivery,
     ):
         """
-        Only PENDING and WAITING_FOR_RIDER deliveries
-        may receive a new assignment.
+        Delivery may receive an assignment only while:
+
+            PENDING
+            WAITING_FOR_RIDER
+
+        If a cancelled Assignment #1 exists, the delivery must
+        have been explicitly restarted by admin/staff.
         """
 
         if delivery.status not in (
@@ -967,18 +1275,13 @@ class AssignmentService:
                 f"be assigned."
             )
 
-        cls._ensure_not_assigned(
-            delivery,
-        )
-
     @staticmethod
     def _ensure_delivery_status(
         delivery,
         expected,
     ):
         """
-        Ensure the delivery is in the exact expected
-        state for the transition.
+        Ensure exact delivery status.
         """
 
         if delivery.status != expected:
@@ -988,58 +1291,96 @@ class AssignmentService:
                 f"'{delivery.status}'."
             )
 
-    # ==================================================
-    # Assignment Validation
-    # ==================================================
+    # ============================================================
+    # ASSIGNMENT COUNT
+    # ============================================================
 
-    @classmethod
-    def _ensure_not_assigned(
-        cls,
+    @staticmethod
+    def _get_assignment_count(
         delivery,
     ):
         """
-        Ensure the delivery has no active assignment.
+        Return the lifetime number of DeliveryAssignment rows.
+
+        IMPORTANT:
+
+        This counts database rows, not assignment lifecycles.
+
+        Therefore:
+
+            Assignment #1
+                cancelled
+                restarted
+                cancelled
+                restarted
+
+        still has:
+
+            assignment_count = 1
         """
 
-        exists = (
+        if delivery is None:
+            return 0
+
+        return (
             DeliveryAssignment.objects
             .filter(
                 delivery=delivery,
-                status__in=(
-                    cls.ACTIVE_ASSIGNMENT_STATUSES
-                ),
-                is_active=True,
             )
-            .exists()
+            .count()
         )
 
-        if exists:
-            raise AssignmentAlreadyExists(
-                "Delivery already has an active "
-                "rider assignment."
-            )
+    # ============================================================
+    # MAXIMUM ASSIGNMENTS
+    # ============================================================
 
-    # ==================================================
-    # Rider Validation
-    # ==================================================
+    @staticmethod
+    def _get_maximum_rider_assignments(
+        config,
+    ):
+        """
+        Return maximum lifetime assignment records.
+
+        Current business rule:
+
+            max_rider_assignments = 1
+
+        <= 0 is treated as unlimited for compatibility with the
+        existing configuration service.
+        """
+
+        if config is None:
+            return 0
+
+        value = getattr(
+            config,
+            "max_rider_assignments",
+            0,
+        )
+
+        try:
+            return int(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return 0
+
+    # ============================================================
+    # RIDER VALIDATION
+    # ============================================================
 
     @classmethod
     def _ensure_rider_assignable(
         cls,
         rider,
         profile,
+        exclude_assignment=None,
     ):
         """
-        Validate rider state immediately before
-        assignment.
-
-        The supplied profile has already been locked
-        by _lock_rider().
+        Validate rider before assigning/reusing Assignment #1.
         """
-
-        # ----------------------------------------------
-        # Account
-        # ----------------------------------------------
 
         if not rider.is_active:
             raise InvalidAssignmentState(
@@ -1050,10 +1391,6 @@ class AssignmentService:
             raise InvalidAssignmentState(
                 "Rider is not verified."
             )
-
-        # ----------------------------------------------
-        # Role
-        # ----------------------------------------------
 
         rider_role = getattr(
             rider,
@@ -1066,52 +1403,28 @@ class AssignmentService:
                 "User is not a rider."
             )
 
-        # ----------------------------------------------
-        # Profile
-        # ----------------------------------------------
-
         if profile is None:
             raise InvalidAssignmentState(
                 "Rider does not have a rider profile."
             )
-
-        # ----------------------------------------------
-        # Online
-        # ----------------------------------------------
 
         if not profile.is_online:
             raise InvalidAssignmentState(
                 "Rider is offline."
             )
 
-        # ----------------------------------------------
-        # Availability
-        # ----------------------------------------------
-
         if not profile.is_available:
             raise InvalidAssignmentState(
                 "Rider is currently unavailable."
             )
 
-        # ----------------------------------------------
-        # Verification
-        # ----------------------------------------------
-
         if (
             profile.verification_status
-            != (
-                RiderProfile
-                .VerificationStatus
-                .APPROVED
-            )
+            != RiderProfile.VerificationStatus.APPROVED
         ):
             raise InvalidAssignmentState(
                 "Rider verification is not approved."
             )
-
-        # ----------------------------------------------
-        # Existing active assignment
-        # ----------------------------------------------
 
         has_active_assignment = (
             DeliveryAssignment.objects
@@ -1122,18 +1435,69 @@ class AssignmentService:
                 ),
                 is_active=True,
             )
+            .exclude(
+                pk=None,
+            )
             .exists()
         )
 
-        if has_active_assignment:
+        if exclude_assignment is not None:
+            has_active_assignment = has_active_assignment.exclude(
+                pk = exclude_assignment.pk
+            )
+
+        if has_active_assignment.exist():
             raise InvalidAssignmentState(
                 "Rider already has an active "
                 "assignment."
             )
 
-    # ==================================================
-    # Assignment Status Validation
-    # ==================================================
+    # ============================================================
+    # ADMIN / STAFF VALIDATION
+    # ============================================================
+
+    @staticmethod
+    def _ensure_admin_or_staff(
+        user,
+    ):
+        """
+        Validate admin/staff authorization.
+        """
+
+        if user is None:
+            raise InvalidAssignmentState(
+                "Admin/staff user is required."
+            )
+
+        if not getattr(
+            user,
+            "is_active",
+            False,
+        ):
+            raise InvalidAssignmentState(
+                "Admin/staff account is not active."
+            )
+
+        if not (
+            getattr(
+                user,
+                "is_staff",
+                False,
+            )
+            or getattr(
+                user,
+                "is_superuser",
+                False,
+            )
+        ):
+            raise InvalidAssignmentState(
+                "Only admin/staff users may perform "
+                "this operation."
+            )
+
+    # ============================================================
+    # ASSIGNMENT STATUS VALIDATION
+    # ============================================================
 
     @staticmethod
     def _ensure_status(
@@ -1141,8 +1505,7 @@ class AssignmentService:
         expected,
     ):
         """
-        Ensure the assignment is currently in the
-        expected state.
+        Ensure assignment has expected status.
         """
 
         if assignment.status != expected:
@@ -1152,67 +1515,9 @@ class AssignmentService:
                 f"'{assignment.status}'."
             )
 
-    # ==================================================
-    # Cancellation Validation
-    # ==================================================
-
-    @classmethod
-    def _ensure_cancellable(
-        cls,
-        assignment,
-    ):
-        """
-        Ensure the assignment can be cancelled.
-        """
-
-        cls._ensure_assignment_active(
-            assignment,
-        )
-
-        if assignment.status not in (
-            cls.CANCELLABLE_STATUSES
-        ):
-            raise InvalidAssignmentState(
-                f"Assignment with status "
-                f"'{assignment.status}' "
-                f"cannot be cancelled."
-            )
-
-    # ==================================================
-    # Reassignment Validation
-    # ==================================================
-
-    @staticmethod
-    def _ensure_reassignable(
-        assignment,
-    ):
-        """
-        Ensure the assignment has been cancelled
-        before redispatch.
-        """
-
-        if (
-            assignment.status
-            != (
-                DeliveryAssignment
-                .AssignmentStatus
-                .CANCELLED
-            )
-        ):
-            raise InvalidAssignmentState(
-                f"Assignment with status "
-                f"'{assignment.status}' "
-                f"cannot be reassigned."
-            )
-
-        if assignment.is_active:
-            raise InvalidAssignmentState(
-                "Cancelled assignment must be inactive."
-            )
-
-    # ==================================================
-    # Assignment State Update
-    # ==================================================
+    # ============================================================
+    # UPDATE ASSIGNMENT STATUS
+    # ============================================================
 
     @staticmethod
     def _update_assignment_status(
@@ -1222,8 +1527,6 @@ class AssignmentService:
     ):
         """
         Update assignment state.
-
-        Only changed fields are persisted.
         """
 
         assignment.status = status
@@ -1244,10 +1547,6 @@ class AssignmentService:
                 field_name,
             )
 
-        # ----------------------------------------------
-        # TimeStampedModel compatibility
-        # ----------------------------------------------
-
         if hasattr(
             assignment,
             "updated_at",
@@ -1264,9 +1563,9 @@ class AssignmentService:
 
         return assignment
 
-    # ==================================================
-    # Delivery State Update
-    # ==================================================
+    # ============================================================
+    # UPDATE DELIVERY STATUS
+    # ============================================================
 
     @staticmethod
     def _update_delivery_status(
@@ -1274,12 +1573,7 @@ class AssignmentService:
         status,
     ):
         """
-        Update delivery status and automatically
-        populate the timestamp associated with that
-        status.
-
-        Existing timestamps are not cleared when a
-        delivery changes status.
+        Update delivery status and corresponding timestamp.
         """
 
         now = timezone.now()
@@ -1332,10 +1626,6 @@ class AssignmentService:
                 timestamp_field,
             )
 
-        # ----------------------------------------------
-        # TimeStampedModel compatibility
-        # ----------------------------------------------
-
         if hasattr(
             delivery,
             "updated_at",
@@ -1347,12 +1637,12 @@ class AssignmentService:
         delivery.save(
             update_fields=list(
                 update_fields,
-            ),
+            )
         )
 
-    # ==================================================
-    # Rider Availability
-    # ==================================================
+    # ============================================================
+    # RIDER AVAILABILITY
+    # ============================================================
 
     @staticmethod
     def _set_rider_availability(
@@ -1361,9 +1651,6 @@ class AssignmentService:
     ):
         """
         Update rider availability.
-
-        The profile MUST already be locked by the
-        caller.
         """
 
         if profile is None:
@@ -1389,9 +1676,9 @@ class AssignmentService:
             update_fields=update_fields,
         )
 
-    # ==================================================
-    # Rider Availability If Free
-    # ==================================================
+    # ============================================================
+    # RIDER AVAILABILITY IF FREE
+    # ============================================================
 
     @classmethod
     def _set_rider_availability_if_free(
@@ -1399,11 +1686,7 @@ class AssignmentService:
         rider,
     ):
         """
-        Make the rider available only when there are
-        no remaining active assignments.
-
-        The RiderProfile row is locked before checking
-        the rider's assignment state.
+        Make rider available if no active assignment remains.
         """
 
         try:
@@ -1453,9 +1736,9 @@ class AssignmentService:
                 update_fields=update_fields,
             )
 
-    # ==================================================
-    # Cancel Competing Offers
-    # ==================================================
+    # ============================================================
+    # CANCEL SELECTED PENDING OFFERS
+    # ============================================================
 
     @staticmethod
     def _cancel_pending_offers(
@@ -1463,58 +1746,64 @@ class AssignmentService:
         accepted_rider,
     ):
         """
-        Cancel all pending offers for the delivery
-        except the selected rider's offer.
-
-        This prevents another rider from accepting a
-        competing pending offer after assignment.
+        Cancel all pending offers except the selected rider.
         """
 
         (
             DeliveryOffer.objects
             .filter(
                 delivery=delivery,
-                status=(
-                    DeliveryOffer.Status.PENDING
-                ),
+                status=DeliveryOffer.Status.PENDING,
             )
             .exclude(
                 rider=accepted_rider,
             )
             .update(
-                status=(
-                    DeliveryOffer.Status.CANCELLED
-                ),
+                status=DeliveryOffer.Status.CANCELLED,
                 responded_at=timezone.now(),
             )
         )
 
-    # ==================================================
-    # Notifications
-    # ==================================================
+    # ============================================================
+    # CANCEL ALL PENDING OFFERS
+    # ============================================================
+
+    @staticmethod
+    def _cancel_all_pending_offers(
+        delivery,
+    ):
+        """
+        Cancel every pending offer.
+        """
+
+        (
+            DeliveryOffer.objects
+            .filter(
+                delivery=delivery,
+                status=DeliveryOffer.Status.PENDING,
+            )
+            .update(
+                status=DeliveryOffer.Status.CANCELLED,
+                responded_at=timezone.now(),
+            )
+        )
+
+    # ============================================================
+    # ASSIGNMENT NOTIFICATIONS
+    # ============================================================
 
     @staticmethod
     def _schedule_assignment_notifications(
         assignment,
     ):
         """
-        Schedule notifications only after the database
-        transaction commits successfully.
-
-        Notification failures therefore cannot roll back
-        the assignment transaction.
+        Notify relevant parties after assignment transaction
+        commits.
         """
 
         from .notifier import DispatchNotifier
 
         def notify():
-            """
-            Execute all assignment notifications.
-
-            Each notification is isolated so that a
-            failure in one notification does not prevent
-            the remaining notifications from executing.
-            """
 
             notification_methods = (
                 DispatchNotifier.notify_rider,
@@ -1530,9 +1819,48 @@ class AssignmentService:
                     )
 
                 except Exception:
-                    # Notification infrastructure should
-                    # never break the dispatch transaction.
                     pass
+
+        transaction.on_commit(
+            notify,
+        )
+
+    # ============================================================
+    # CANCELLATION NOTIFICATIONS
+    # ============================================================
+
+    @staticmethod
+    def _schedule_assignment_cancelled_notifications(
+        assignment,
+        cancelled_by,
+    ):
+        """
+        Notify relevant parties after administrative
+        cancellation.
+        """
+
+        from .notifier import DispatchNotifier
+
+        def notify():
+
+            notify_method = getattr(
+                DispatchNotifier,
+                "notify_assignment_cancelled",
+                None,
+            )
+
+            if notify_method is None:
+                return
+
+            try:
+
+                notify_method(
+                    assignment,
+                    cancelled_by=cancelled_by,
+                )
+
+            except Exception:
+                pass
 
         transaction.on_commit(
             notify,

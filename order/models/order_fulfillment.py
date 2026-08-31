@@ -120,6 +120,17 @@ class OrderFulfillment(models.Model):
         related_name="order_fulfillments",
     )
 
+    store_contact_name = models.CharField(
+        max_length=150,
+        null=True,
+        blank=True,
+    )
+    store_contact_phone = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+    )
+
     # ==================================================
     # Store Snapshot
     # ==================================================

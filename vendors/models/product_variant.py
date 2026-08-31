@@ -1,34 +1,21 @@
 from decimal import Decimal
+import uuid
 from django.core.exceptions import ValidationError
 from django.db import models
-import uuid
-
 
 
 class ProductVariant(models.Model):
     """
     Represents a purchasable variation of a Product.
 
-    Examples:
-
-        T-Shirt
-            ├── Black / Small
-            ├── Black / Medium
-            ├── Black / Large
-            └── White / Medium
-
-        iPhone
-            ├── 128GB / Black
-            ├── 256GB / Black
-            └── 512GB / White
-
     Each variant maintains its own:
 
-        • SKU
-        • price
-        • stock
-        • weight
-        • active status
+        - SKU
+        - price
+        - stock
+        - weight
+        - active status
+        - availability
 
     Variant option values are stored through
     ProductVariantOptionValue.
@@ -39,7 +26,7 @@ class ProductVariant(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    
+
     # ==================================================
     # Product
     # ==================================================
@@ -154,6 +141,10 @@ class ProductVariant(models.Model):
         auto_now=True,
     )
 
+    # ==================================================
+    # Variant Image
+    # ==================================================
+
     productvariantimage = models.ForeignKey(
         "vendors.ProductVariantImage",
         on_delete=models.SET_NULL,
@@ -179,9 +170,7 @@ class ProductVariant(models.Model):
                     "product",
                     "name",
                 ],
-                name=(
-                    "unique_variant_name_per_product"
-                ),
+                name="unique_variant_name_per_product",
             ),
 
             models.UniqueConstraint(
@@ -192,9 +181,7 @@ class ProductVariant(models.Model):
                 condition=~models.Q(
                     sku="",
                 ),
-                name=(
-                    "unique_variant_sku_per_product"
-                ),
+                name="unique_variant_sku_per_product",
             ),
 
             models.UniqueConstraint(
@@ -204,11 +191,8 @@ class ProductVariant(models.Model):
                 condition=models.Q(
                     is_default=True,
                 ),
-                name=(
-                    "unique_default_variant_per_product"
-                ),
+                name="unique_default_variant_per_product",
             ),
-
         ]
 
         indexes = [
@@ -227,10 +211,16 @@ class ProductVariant(models.Model):
                 ],
             ),
 
+            models.Index(
+                fields=[
+                    "product",
+                    "is_available",
+                ],
+            ),
         ]
 
     # ==================================================
-    # String Representation
+    # String
     # ==================================================
 
     def __str__(self):
@@ -252,13 +242,6 @@ class ProductVariant(models.Model):
     # ==================================================
 
     def clean(self):
-        """
-        Validate variant configuration.
-        """
-
-        # ----------------------------------------------
-        # Product
-        # ----------------------------------------------
 
         if self.product_id is None:
 
@@ -271,10 +254,6 @@ class ProductVariant(models.Model):
                 }
             )
 
-        # ----------------------------------------------
-        # Name
-        # ----------------------------------------------
-
         if not self.name.strip():
 
             raise ValidationError(
@@ -285,10 +264,6 @@ class ProductVariant(models.Model):
                     )
                 }
             )
-
-        # ----------------------------------------------
-        # Price
-        # ----------------------------------------------
 
         if (
             self.price is not None
@@ -303,10 +278,6 @@ class ProductVariant(models.Model):
                     )
                 }
             )
-
-        # ----------------------------------------------
-        # Compare-at price
-        # ----------------------------------------------
 
         if (
             self.compare_at_price is not None
@@ -323,10 +294,6 @@ class ProductVariant(models.Model):
                     )
                 }
             )
-
-        # ----------------------------------------------
-        # Weight
-        # ----------------------------------------------
 
         if (
             self.weight is not None
@@ -364,11 +331,6 @@ class ProductVariant(models.Model):
 
     @property
     def effective_price(self):
-        """
-        Return the price used for checkout.
-
-        Variant price overrides Product price.
-        """
 
         if self.price is not None:
 
@@ -382,9 +344,6 @@ class ProductVariant(models.Model):
 
     @property
     def effective_compare_at_price(self):
-        """
-        Return the effective comparison price.
-        """
 
         if self.compare_at_price is not None:
 
@@ -398,9 +357,6 @@ class ProductVariant(models.Model):
 
     @property
     def is_in_stock(self):
-        """
-        Determine whether this variant is in stock.
-        """
 
         if not self.track_inventory:
 
@@ -409,17 +365,24 @@ class ProductVariant(models.Model):
         return self.stock_quantity > 0
 
     # ==================================================
-    # Availability
+    # Purchase Availability
     # ==================================================
 
     @property
-    def is_available(self):
+    def can_be_purchased(self):
         """
         Determine whether this variant can currently
         be purchased.
+
+        This is deliberately different from the
+        database field `is_available`.
         """
 
         if not self.is_active:
+
+            return False
+
+        if not self.is_available:
 
             return False
 
@@ -431,8 +394,6 @@ class ProductVariant(models.Model):
 
             return False
 
-        # Every selected option value must still be
-        # active and belong to an active option.
         for value in self.option_values.select_related(
             "option",
         ).all():
@@ -448,25 +409,20 @@ class ProductVariant(models.Model):
         return True
 
     # ==================================================
-    # Option Values
+    # Selected Option Values
     # ==================================================
 
     @property
     def selected_option_values(self):
-        """
-        Return all option values selected by this
-        variant.
 
-        This returns the actual variant configuration,
-        regardless of whether a value is currently active.
-        """
-
-        return self.option_values.select_related(
-            "option",
-        ).order_by(
-            "option__sort_order",
-            "sort_order",
-            "name",
+        return (
+            self.option_values
+            .select_related("option")
+            .order_by(
+                "option__sort_order",
+                "sort_order",
+                "name",
+            )
         )
 
     # ==================================================
@@ -475,19 +431,19 @@ class ProductVariant(models.Model):
 
     @property
     def active_option_values(self):
-        """
-        Return currently active selected option values.
-        """
 
-        return self.option_values.filter(
-            is_active=True,
-            option__is_active=True,
-        ).select_related(
-            "option",
-        ).order_by(
-            "option__sort_order",
-            "sort_order",
-            "name",
+        return (
+            self.option_values
+            .filter(
+                is_active=True,
+                option__is_active=True,
+            )
+            .select_related("option")
+            .order_by(
+                "option__sort_order",
+                "sort_order",
+                "name",
+            )
         )
 
     # ==================================================
@@ -496,10 +452,6 @@ class ProductVariant(models.Model):
 
     @property
     def option_value_count(self):
-        """
-        Return the number of option values assigned
-        to this variant.
-        """
 
         return self.option_values.count()
 
@@ -509,14 +461,13 @@ class ProductVariant(models.Model):
 
     @property
     def option_count(self):
-        """
-        Return the number of distinct product options
-        represented by this variant.
-        """
 
-        return self.option_values.values(
-            "option_id",
-        ).distinct().count()
+        return (
+            self.option_values
+            .values("option_id")
+            .distinct()
+            .count()
+        )
 
     # ==================================================
     # Has Options
@@ -524,10 +475,6 @@ class ProductVariant(models.Model):
 
     @property
     def has_options(self):
-        """
-        Determine whether this variant has option
-        values.
-        """
 
         return self.option_values.exists()
 
@@ -536,19 +483,16 @@ class ProductVariant(models.Model):
     # ==================================================
 
     def has_complete_options(self):
-        """
-        Determine whether this variant contains exactly
-        one value for every active option on the product.
 
-        Useful for validating generated variants.
-        """
-
-        active_options = self.product.options.filter(
-            is_active=True,
-        ).count()
+        active_options = (
+            self.product.options
+            .filter(is_active=True)
+            .count()
+        )
 
         return (
-            self.option_count == active_options
+            self.option_count
+            == active_options
         )
 
     # ==================================================
@@ -559,10 +503,6 @@ class ProductVariant(models.Model):
         self,
         option_value,
     ):
-        """
-        Determine whether this variant contains a
-        particular option value.
-        """
 
         if option_value is None:
 
@@ -587,20 +527,6 @@ class ProductVariant(models.Model):
         option,
         default=None,
     ):
-        """
-        Return the selected value for a particular
-        ProductOption.
-
-        Example:
-
-            variant.get_option_value(
-                color_option
-            )
-
-        Returns:
-
-            Black
-        """
 
         if option is None:
 
@@ -627,14 +553,6 @@ class ProductVariant(models.Model):
 
     @property
     def option_summary(self):
-        """
-        Return a human-readable summary of the variant's
-        selected option values.
-
-        Example:
-
-            "Black / Medium"
-        """
 
         values = self.option_values.order_by(
             "option__sort_order",
@@ -653,9 +571,6 @@ class ProductVariant(models.Model):
 
     @property
     def pickup_store(self):
-        """
-        Return the store where this variant is located.
-        """
 
         return self.product.store
 
@@ -665,9 +580,5 @@ class ProductVariant(models.Model):
 
     @property
     def pickup_location(self):
-        """
-        Return the physical pickup location used by
-        dispatch.
-        """
 
         return self.product.pickup_location

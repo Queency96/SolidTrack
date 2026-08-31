@@ -1,8 +1,10 @@
 from django.db import transaction
+
 from deliveries.constants import DeliveryOfferAction
 from deliveries.models.delivery import Delivery
 from deliveries.models.delivery_assignment import DeliveryAssignment
 from deliveries.models.delivery_offer import DeliveryOffer
+
 from .assignment import AssignmentService
 from .context import DispatchContext
 from .events import (
@@ -48,35 +50,40 @@ class DispatchCoordinator:
     • Trigger dispatch failure notifications
     • Return standardized DispatchResult objects
 
-    Important
+    IMPORTANT
     ---------
     max_rider_assignments represents the maximum number of
-    rider assignment attempts allowed for a delivery.
+    ACTUAL DeliveryAssignment records allowed for a delivery.
 
     A DeliveryOffer is NOT an assignment.
 
-    Therefore:
-
         DeliveryOffer
             =
-        Rider was offered the delivery
+        Rider was offered the delivery.
 
         DeliveryAssignment
             =
-        Rider was actually assigned
+        Rider was actually assigned the delivery.
 
-    Rejected and expired offers do not themselves consume
-    an assignment.
+    Therefore:
 
-    However, each new rider can be attempted through the
-    dispatch lifecycle until the configured maximum rider
-    assignment limit is reached.
+        rejected offer
+            -> 0 assignments
+
+        expired offer
+            -> 0 assignments
+
+        accepted offer
+            -> 1 assignment
+
+    Rejected and expired offers do not consume the
+    max_rider_assignments limit.
 
     Persistent rider-attempt history is derived from
     DeliveryOffer records.
 
-    DispatchContext stores the in-memory state of the
-    current dispatch attempt.
+    DispatchContext stores only the current in-memory
+    dispatch attempt.
 
     The coordinator does NOT contain:
 
@@ -103,7 +110,8 @@ class DispatchCoordinator:
         The delivery-created event is published before
         dispatch begins.
 
-        Dispatch itself starts from this coordinator.
+        Event publication failure must never prevent
+        dispatch.
         """
 
         if delivery is None:
@@ -149,13 +157,17 @@ class DispatchCoordinator:
         Persistent DeliveryOffer history is used to exclude
         riders that have already received an offer.
 
+        max_rider_assignments is checked against actual
+        DeliveryAssignment records.
+
         Parameters
         ----------
         delivery:
             Delivery being dispatched.
 
         excluded_rider_ids:
-            Optional rider IDs to exclude.
+            Optional rider IDs to exclude from the current
+            dispatch attempt.
 
         attempt:
             Optional explicit dispatch attempt number.
@@ -166,7 +178,6 @@ class DispatchCoordinator:
         """
 
         try:
-
             # ------------------------------------------
             # Validate delivery
             # ------------------------------------------
@@ -182,6 +193,19 @@ class DispatchCoordinator:
                         "Delivery cannot be None.",
                     ],
                 )
+
+            # ------------------------------------------
+            # Lock delivery
+            #
+            # This is important because the maximum
+            # assignment check must be evaluated against
+            # the same delivery row used by assignment
+            # creation.
+            # ------------------------------------------
+
+            delivery = cls._lock_delivery(
+                delivery,
+            )
 
             # ------------------------------------------
             # Terminal delivery validation
@@ -253,7 +277,7 @@ class DispatchCoordinator:
                 )
 
             # ------------------------------------------
-            # Validate maximum rider assignments
+            # Maximum actual assignment check
             # ------------------------------------------
 
             if cls._maximum_rider_assignments_reached(
@@ -267,7 +291,10 @@ class DispatchCoordinator:
                         "attempts have been reached."
                     ),
                     errors=[
-                        "Maximum rider assignment limit reached.",
+                        (
+                            "Maximum rider assignment "
+                            "limit reached."
+                        ),
                     ],
                 )
 
@@ -403,6 +430,58 @@ class DispatchCoordinator:
             )
 
     # ==================================================
+    # Delivery Lock
+    # ==================================================
+
+    @staticmethod
+    def _lock_delivery(
+        delivery,
+    ):
+        """
+        Lock the delivery row before performing operations
+        that depend on delivery state.
+
+        This is particularly important for:
+
+            • Maximum assignment checks
+            • Assignment creation
+            • Concurrent dispatch attempts
+            • Concurrent offer acceptance
+        """
+
+        if delivery is None:
+            raise InvalidOfferState(
+                "Delivery is required."
+            )
+
+        try:
+            delivery_id = delivery.pk
+
+        except AttributeError:
+            raise InvalidOfferState(
+                "Invalid delivery."
+            )
+
+        try:
+            return (
+                Delivery.objects
+                .select_for_update()
+                .select_related(
+                    "customer",
+                    "vendor",
+                    "store",
+                )
+                .get(
+                    pk=delivery_id,
+                )
+            )
+
+        except Delivery.DoesNotExist:
+            raise InvalidOfferState(
+                "Delivery does not exist."
+            )
+
+    # ==================================================
     # Dispatch Failure
     # ==================================================
 
@@ -459,50 +538,248 @@ class DispatchCoordinator:
     # ==================================================
 
     @classmethod
-    def respond_to_offer(
+    def _accept_offer(
         cls,
         offer,
-        action,
-        reason="",
     ):
         """
-        Process a rider's response to a delivery offer.
+        Atomically accept an offer and create its assignment.
 
-        Supported actions:
+        Concurrency protection:
 
-            ACCEPT
-            REJECT
+            Delivery row → locked
+            Offer row    → locked
+
+        The delivery lock guarantees that competing riders
+        cannot simultaneously pass the assignment-limit
+        check for the same delivery.
         """
 
         if offer is None:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
-                message="Delivery offer is required.",
+                message=(
+                    "Delivery offer is required."
+                ),
                 errors=[
                     "Offer cannot be None.",
                 ],
             )
 
-        if action == DeliveryOfferAction.ACCEPT:
-            return cls._accept_offer(
-                offer=offer,
+        try:
+
+            with transaction.atomic():
+
+                # ------------------------------------------
+                # Lock delivery
+                # ------------------------------------------
+
+                delivery = (
+                    Delivery.objects
+                    .select_for_update()
+                    .select_related(
+                        "customer",
+                        "vendor",
+                        "store",
+                    )
+                    .get(
+                        pk=offer.delivery_id,
+                    )
+                )
+
+                # ------------------------------------------
+                # Lock offer
+                # ------------------------------------------
+
+                locked_offer = (
+                    DeliveryOffer.objects
+                    .select_for_update()
+                    .select_related(
+                        "delivery",
+                        "rider",
+                    )
+                    .get(
+                        pk=offer.pk,
+                    )
+                )
+
+                # ------------------------------------------
+                # Delivery terminal validation
+                # ------------------------------------------
+
+                if cls._delivery_is_terminal(
+                    delivery,
+                ):
+                    raise InvalidOfferState(
+                        "Cannot accept an offer for "
+                        "a terminal delivery."
+                    )
+
+                # ------------------------------------------
+                # Configuration
+                # ------------------------------------------
+
+                config = (
+                    DispatchConfigurationService
+                    .get_configuration()
+                )
+
+                if config is None:
+                    raise DispatchConfigurationError(
+                        "No active dispatch configuration "
+                        "is available."
+                    )
+
+                # ------------------------------------------
+                # Assignment limit
+                # ------------------------------------------
+
+                if cls._maximum_rider_assignments_reached(
+                    delivery=delivery,
+                    config=config,
+                ):
+                    raise AssignmentAlreadyExists(
+                        "Maximum rider assignment "
+                        "limit has already been reached."
+                    )
+
+                # ------------------------------------------
+                # Accept offer
+                # ------------------------------------------
+
+                accepted_offer = (
+                    DeliveryOfferService.accept(
+                        offer=locked_offer,
+                    )
+                )
+
+                # ------------------------------------------
+                # Create assignment
+                # ------------------------------------------
+
+                assignment = (
+                    AssignmentService.assign(
+                        delivery=delivery,
+                        rider=accepted_offer.rider,
+                    )
+                )
+
+                # ------------------------------------------
+                # Publish event after commit
+                # ------------------------------------------
+
+                cls._publish_after_commit(
+                    DeliveryOfferAcceptedEvent(
+                        assignment=assignment,
+                    )
+                )
+
+                # ------------------------------------------
+                # Result
+                # ------------------------------------------
+
+                return DispatchResult.success_result(
+                    status=DispatchStatus.ASSIGNED,
+                    message=(
+                        "Delivery offer accepted "
+                        "and rider assigned."
+                    ),
+                    delivery=delivery,
+                    offer=accepted_offer,
+                    assignment=assignment,
+                )
+
+        except DeliveryOffer.DoesNotExist:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=(
+                    "Delivery offer does not exist."
+                ),
+                errors=[
+                    "Delivery offer does not exist.",
+                ],
             )
 
-        if action == DeliveryOfferAction.REJECT:
-            return cls._reject_offer(
-                offer=offer,
-                reason=reason,
+        except Delivery.DoesNotExist:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=(
+                    "Delivery does not exist."
+                ),
+                errors=[
+                    "Delivery does not exist.",
+                ],
             )
 
-        return DispatchResult.failure_result(
-            status=DispatchStatus.FAILED,
-            message="Invalid dispatch action.",
-            delivery=offer.delivery,
-            offer=offer,
-            errors=[
-                "Unsupported delivery offer action.",
-            ],
-        )
+        except InvalidOfferState as exc:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=str(exc),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
+                offer=offer,
+                errors=[
+                    str(exc),
+                ],
+            )
+
+        except AssignmentAlreadyExists as exc:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.ASSIGNED,
+                message=str(exc),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
+                offer=offer,
+                errors=[
+                    str(exc),
+                ],
+            )
+
+        except DispatchConfigurationError as exc:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=str(exc),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
+                offer=offer,
+                errors=[
+                    str(exc),
+                ],
+            )
+
+        except Exception as exc:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=(
+                    "Unable to accept "
+                    "delivery offer."
+                ),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
+                offer=offer,
+                errors=[
+                    str(exc),
+                ],
+            )
+
 
     # ==================================================
     # Accept Offer
@@ -517,12 +794,31 @@ class DispatchCoordinator:
         Accept an offer and create the corresponding
         rider assignment.
 
-        Delivery is locked first.
+        IMPORTANT
+        ---------
+        The delivery is locked before the offer is
+        accepted and before the assignment is created.
 
-        Offer acceptance and assignment creation occur
-        within the same transaction.
+        This serializes competing assignment attempts
+        against the same delivery.
 
-        The actual assignment is created by
+        Flow:
+
+            Lock Delivery
+                ↓
+            Validate Delivery
+                ↓
+            Check Assignment Limit
+                ↓
+            Accept Offer
+                ↓
+            Create Assignment
+                ↓
+            Commit
+                ↓
+            Publish Event
+
+        The actual assignment is created exclusively by
         AssignmentService.
         """
 
@@ -564,6 +860,37 @@ class DispatchCoordinator:
                     )
 
                 # --------------------------------------
+                # Load configuration
+                # --------------------------------------
+
+                config = (
+                    DispatchConfigurationService
+                    .get_configuration()
+                )
+
+                if config is None:
+                    raise DispatchConfigurationError(
+                        "No active dispatch configuration "
+                        "is available."
+                    )
+
+                # --------------------------------------
+                # Maximum assignment validation
+                #
+                # This is deliberately performed while
+                # the delivery row is locked.
+                # --------------------------------------
+
+                if cls._maximum_rider_assignments_reached(
+                    delivery=delivery,
+                    config=config,
+                ):
+                    raise AssignmentAlreadyExists(
+                        "Maximum rider assignment "
+                        "limit has already been reached."
+                    )
+
+                # --------------------------------------
                 # Accept offer
                 # --------------------------------------
 
@@ -585,7 +912,7 @@ class DispatchCoordinator:
                 )
 
                 # --------------------------------------
-                # Publish event after commit
+                # Publish accepted event after commit
                 # --------------------------------------
 
                 transaction.on_commit(
@@ -618,7 +945,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -628,12 +959,29 @@ class DispatchCoordinator:
         except AssignmentAlreadyExists as exc:
 
             return DispatchResult.failure_result(
-                status=DispatchStatus.ASSIGNED,
-                message=(
-                    "Delivery has already been "
-                    "assigned to a rider."
+                status=DispatchStatus.FAILED,
+                message=str(exc),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
                 ),
-                delivery=offer.delivery,
+                offer=offer,
+                errors=[
+                    str(exc),
+                ],
+            )
+
+        except DispatchConfigurationError as exc:
+
+            return DispatchResult.failure_result(
+                status=DispatchStatus.FAILED,
+                message=str(exc),
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -648,7 +996,11 @@ class DispatchCoordinator:
                     "Unable to accept "
                     "delivery offer."
                 ),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -668,11 +1020,13 @@ class DispatchCoordinator:
         """
         Reject the current offer.
 
-        Rejection does not create an assignment.
+        Rejection does NOT create an assignment.
 
-        If automatic redispatch is enabled, another rider
-        can be offered the delivery, provided the maximum
-        rider-assignment limit has not been reached.
+        Therefore rejection does NOT consume
+        max_rider_assignments.
+
+        If automatic redispatch is enabled, the next
+        eligible rider can be offered the delivery.
         """
 
         if offer is None:
@@ -698,17 +1052,9 @@ class DispatchCoordinator:
             )
 
             # ------------------------------------------
-            # Publish event
-            # ------------------------------------------
-
-            cls._publish_after_commit(
-                DeliveryOfferRejectedEvent(
-                    offer=rejected_offer,
-                )
-            )
-
-            # ------------------------------------------
             # Notify
+            #
+            # This is intentionally best-effort.
             # ------------------------------------------
 
             cls._notify_offer_rejected(
@@ -733,7 +1079,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -745,7 +1095,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -760,7 +1114,11 @@ class DispatchCoordinator:
                     "Unable to process rejected "
                     "delivery offer."
                 ),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -779,10 +1137,10 @@ class DispatchCoordinator:
         """
         Expire an offer and optionally redispatch.
 
-        Expiration does not create an assignment.
+        Expiration does NOT create an assignment.
 
-        The expired rider remains excluded from future
-        dispatch attempts.
+        Therefore expiration does NOT consume
+        max_rider_assignments.
         """
 
         if offer is None:
@@ -803,16 +1161,6 @@ class DispatchCoordinator:
             expired_offer = (
                 DeliveryOfferService.expire(
                     offer=offer,
-                )
-            )
-
-            # ------------------------------------------
-            # Publish event
-            # ------------------------------------------
-
-            cls._publish_after_commit(
-                DeliveryOfferExpiredEvent(
-                    offer=expired_offer,
                 )
             )
 
@@ -842,7 +1190,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -854,7 +1206,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -869,7 +1225,11 @@ class DispatchCoordinator:
                     "Unable to process expired "
                     "delivery offer."
                 ),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -891,15 +1251,41 @@ class DispatchCoordinator:
         Redispatch a delivery after an offer reaches a
         terminal offer state.
 
-        The previous rider remains excluded because the
+        The previous rider remains excluded because
         DeliveryOffer history is the persistent source
         of truth.
 
-        max_rider_assignments controls how many actual
-        rider-assignment attempts may be made.
+        IMPORTANT
+        ---------
+        max_rider_assignments is checked against actual
+        DeliveryAssignment records.
 
-        A rejected/expired offer does not itself create
-        an assignment.
+        A rejected or expired offer does not increment
+        the assignment count.
+
+        Example:
+
+            max_rider_assignments = 3
+
+            Offer #1 -> rejected
+            assignments = 0
+
+            Offer #2 -> expired
+            assignments = 0
+
+            Offer #3 -> rejected
+            assignments = 0
+
+            Offer #4 -> accepted
+            assignments = 1
+
+            Offer #5 -> accepted
+            assignments = 2
+
+            Offer #6 -> accepted
+            assignments = 3
+
+            Further assignment attempts are blocked.
         """
 
         if offer is None:
@@ -908,7 +1294,13 @@ class DispatchCoordinator:
                 "for redispatch."
             )
 
-        delivery = offer.delivery
+        # ----------------------------------------------
+        # Lock delivery
+        # ----------------------------------------------
+
+        delivery = cls._lock_delivery(
+            offer.delivery,
+        )
 
         # ----------------------------------------------
         # Validate delivery
@@ -948,7 +1340,7 @@ class DispatchCoordinator:
 
         if not config.auto_redispatch:
 
-            return DispatchResult.success_result(
+            result = DispatchResult.success_result(
                 status=status,
                 message=(
                     f"Delivery offer "
@@ -959,8 +1351,14 @@ class DispatchCoordinator:
                 offer=offer,
             )
 
+            result.add_warning(
+                warning,
+            )
+
+            return result
+
         # ----------------------------------------------
-        # Maximum rider assignment check
+        # Maximum ACTUAL assignment check
         # ----------------------------------------------
 
         if cls._maximum_rider_assignments_reached(
@@ -976,7 +1374,10 @@ class DispatchCoordinator:
                 delivery=delivery,
                 offer=offer,
                 errors=[
-                    "Maximum rider assignment limit reached.",
+                    (
+                        "Maximum rider assignment "
+                        "limit reached."
+                    ),
                 ],
             )
 
@@ -1030,6 +1431,13 @@ class DispatchCoordinator:
                 offer.status,
             )
 
+            redispatch_result.context.add_metadata(
+                "completed_rider_assignments",
+                cls._get_completed_assignment_count(
+                    delivery,
+                ),
+            )
+
             redispatch_result.context.add_warning(
                 warning,
             )
@@ -1054,8 +1462,10 @@ class DispatchCoordinator:
         """
         Cancel a pending delivery offer.
 
-        Cancellation does not automatically redispatch
-        the delivery.
+        Cancellation does NOT create an assignment.
+
+        Cancellation also does NOT automatically
+        redispatch the delivery.
         """
 
         if offer is None:
@@ -1087,7 +1497,11 @@ class DispatchCoordinator:
             return DispatchResult.failure_result(
                 status=DispatchStatus.FAILED,
                 message=str(exc),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -1102,7 +1516,11 @@ class DispatchCoordinator:
                     "Unable to cancel "
                     "delivery offer."
                 ),
-                delivery=offer.delivery,
+                delivery=getattr(
+                    offer,
+                    "delivery",
+                    None,
+                ),
                 offer=offer,
                 errors=[
                     str(exc),
@@ -1189,8 +1607,16 @@ class DispatchCoordinator:
         DeliveryOffer is the persistent source of truth
         for rider dispatch history.
 
-        Any rider with a DeliveryOffer record is treated
+        Any rider with any DeliveryOffer record is treated
         as previously attempted.
+
+        This includes:
+
+            PENDING
+            ACCEPTED
+            REJECTED
+            EXPIRED
+            CANCELLED
         """
 
         if delivery is None:
@@ -1199,7 +1625,7 @@ class DispatchCoordinator:
         return set(
             DeliveryOffer.objects
             .filter(
-                delivery=delivery,
+                delivery_id=delivery.pk,
             )
             .values_list(
                 "rider_id",
@@ -1216,10 +1642,10 @@ class DispatchCoordinator:
         delivery,
     ):
         """
-        Determine the next dispatch attempt number.
+        Determine the next dispatch cycle number.
 
-        This number represents dispatch cycles/offers,
-        not completed assignments.
+        This number represents dispatch offer cycles,
+        NOT actual assignments.
 
         Examples:
 
@@ -1232,8 +1658,8 @@ class DispatchCoordinator:
             Two previous offers:
                 attempt = 3
 
-        The assignment limit is enforced separately by
-        _maximum_rider_assignments_reached().
+        The assignment limit is enforced separately
+        against DeliveryAssignment records.
         """
 
         if delivery is None:
@@ -1242,7 +1668,7 @@ class DispatchCoordinator:
         previous_offers = (
             DeliveryOffer.objects
             .filter(
-                delivery=delivery,
+                delivery_id=delivery.pk,
             )
             .count()
         )
@@ -1258,8 +1684,8 @@ class DispatchCoordinator:
         config,
     ):
         """
-        Return the configured maximum number of rider
-        assignments.
+        Return the configured maximum number of actual
+        rider assignments.
 
         Configuration field:
 
@@ -1271,8 +1697,12 @@ class DispatchCoordinator:
                 unlimited
 
             > 0
-                maximum number of assignment records
-                allowed for the delivery.
+                maximum number of actual
+                DeliveryAssignment records.
+
+        IMPORTANT
+        ---------
+        DeliveryOffer records are NEVER counted here.
         """
 
         if config is None:
@@ -1302,13 +1732,12 @@ class DispatchCoordinator:
         delivery,
     ):
         """
-        Return the number of rider assignments already
+        Return the number of actual rider assignments
         created for the delivery.
 
         DeliveryAssignment is the source of truth.
 
-        This is intentionally NOT derived from
-        DeliveryOffer count.
+        DeliveryOffer is deliberately NOT used.
         """
 
         if delivery is None:
@@ -1317,7 +1746,7 @@ class DispatchCoordinator:
         return (
             DeliveryAssignment.objects
             .filter(
-                delivery=delivery,
+                delivery_id=delivery.pk,
             )
             .count()
         )
@@ -1333,38 +1762,38 @@ class DispatchCoordinator:
         config,
     ):
         """
-        Determine whether the maximum number of rider
-        assignments has been reached.
+        Determine whether the maximum number of ACTUAL
+        rider assignments has been reached.
 
-        Important
-        ---------
-        This checks actual DeliveryAssignment records.
-
-        DeliveryOffer records do NOT count as assignments.
-
-        Therefore:
-
-            5 rejected offers
-            +
-            0 assignments
-
-        does NOT mean that 5 assignments have occurred.
+        This method intentionally ignores DeliveryOffer
+        count.
 
         Example:
 
             max_rider_assignments = 3
 
-            assignments = 0
-                -> dispatch allowed
+            Offers:
+                rejected = 10
+                expired = 5
+                cancelled = 2
 
-            assignments = 1
-                -> dispatch allowed
+            Assignments:
+                0
 
-            assignments = 2
-                -> dispatch allowed
+            Result:
+                dispatch is still allowed.
 
-            assignments = 3
-                -> dispatch blocked
+        Once:
+
+            DeliveryAssignment count = 3
+
+        dispatch/assignment creation is blocked.
+
+        IMPORTANT
+        ---------
+        The caller should hold a delivery row lock when
+        this method is used as part of a state-changing
+        operation.
         """
 
         maximum = (
@@ -1381,7 +1810,7 @@ class DispatchCoordinator:
             return False
 
         # ----------------------------------------------
-        # Actual assignments
+        # Actual assignment count
         # ----------------------------------------------
 
         assignment_count = (

@@ -10,13 +10,11 @@ from order.models import (
     OrderPayment,
     OrderFulfillment,
 )
-
 from vendors.models import (
     Product,
     ProductVariant,
 )
-
-from pricing.services.pricing import PricingService
+from deliveries.services.pricing_service import PricingService
 
 
 class CheckoutService:

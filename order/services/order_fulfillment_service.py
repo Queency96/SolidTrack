@@ -1,14 +1,15 @@
 from decimal import Decimal
 import uuid
-
 from django.db import transaction
 from django.utils import timezone
-
+from deliveries.models import(
+    Delivery,
+    DeliveryAddress,
+)
 from ..models import (
     Order,
     OrderFulfillment,
     Package,
-    Delivery,
 )
 
 
@@ -19,21 +20,21 @@ class OrderFulfillmentService:
     Fulfillment lifecycle:
 
         PENDING
-           ↓
+            ↓
         PROCESSING
-           ↓
+            ↓
         PACKING
-           ↓
+            ↓
         READY_FOR_DISPATCH
-           ↓
+            ↓
         Delivery Created
-           ↓
-        DispatchPipeline
-           ↓
+            ↓
+        DispatchPipeline / DispatchCoordinator
+            ↓
         DISPATCHED
-           ↓
+            ↓
         OUT_FOR_DELIVERY
-           ↓
+            ↓
         DELIVERED
 
     Responsibilities:
@@ -44,13 +45,14 @@ class OrderFulfillmentService:
         - Validate packages
         - Mark fulfillment ready
         - Create delivery
+        - Create delivery addresses
         - Mark fulfillment dispatched
         - Mark fulfillment out for delivery
         - Mark fulfillment delivered
         - Cancel fulfillment
 
-    Rider matching and assignment are intentionally
-    delegated to DispatchPipeline / AssignmentService.
+    Rider matching and assignment are delegated to the
+    dispatch layer.
     """
 
     # ==================================================
@@ -72,9 +74,7 @@ class OrderFulfillmentService:
             fulfillment=fulfillment,
         )
 
-        if fulfillment.status != (
-            OrderFulfillment.Status.PENDING
-        ):
+        if fulfillment.status != OrderFulfillment.Status.PENDING:
             raise ValueError(
                 "Fulfillment is not pending."
             )
@@ -87,9 +87,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.PROCESSING
         )
 
-        fulfillment.processing_at = (
-            timezone.now()
-        )
+        fulfillment.processing_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -120,9 +118,7 @@ class OrderFulfillmentService:
             fulfillment=fulfillment,
         )
 
-        if fulfillment.status != (
-            OrderFulfillment.Status.PROCESSING
-        ):
+        if fulfillment.status != OrderFulfillment.Status.PROCESSING:
             raise ValueError(
                 "Fulfillment must be processing "
                 "before packing can begin."
@@ -136,9 +132,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.PACKING
         )
 
-        fulfillment.packing_at = (
-            timezone.now()
-        )
+        fulfillment.packing_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -191,6 +185,14 @@ class OrderFulfillmentService:
 
         cls._ensure_order_can_fulfill(
             fulfillment=fulfillment,
+        )
+
+        cls._validate_package_values(
+            weight=weight,
+            length=length,
+            width=width,
+            height=height,
+            declared_value=declared_value,
         )
 
         package = Package.objects.create(
@@ -249,9 +251,7 @@ class OrderFulfillmentService:
             package=package,
         )
 
-        if package.status != (
-            Package.Status.CREATED
-        ):
+        if package.status != Package.Status.CREATED:
             raise ValueError(
                 "Package is not in the created state."
             )
@@ -269,9 +269,7 @@ class OrderFulfillmentService:
                 "being prepared."
             )
 
-        package.status = (
-            Package.Status.PACKING
-        )
+        package.status = Package.Status.PACKING
 
         package.save(
             update_fields=[
@@ -306,13 +304,9 @@ class OrderFulfillmentService:
                 "from its current state."
             )
 
-        package.status = (
-            Package.Status.PACKED
-        )
+        package.status = Package.Status.PACKED
 
-        package.packed_at = (
-            timezone.now()
-        )
+        package.packed_at = timezone.now()
 
         package.save(
             update_fields=[
@@ -339,21 +333,15 @@ class OrderFulfillmentService:
             package=package,
         )
 
-        if package.status != (
-            Package.Status.PACKED
-        ):
+        if package.status != Package.Status.PACKED:
             raise ValueError(
                 "Package must be packed before "
                 "it can be ready for pickup."
             )
 
-        package.status = (
-            Package.Status.READY_FOR_PICKUP
-        )
+        package.status = Package.Status.READY_FOR_PICKUP
 
-        package.ready_for_pickup_at = (
-            timezone.now()
-        )
+        package.ready_for_pickup_at = timezone.now()
 
         package.save(
             update_fields=[
@@ -381,12 +369,13 @@ class OrderFulfillmentService:
 
         A Delivery is created at this point.
 
-        DispatchPipeline is responsible for:
+        The dispatch layer is responsible for:
 
             - Finding riders
             - Ranking riders
             - Creating offers
-            - Assigning the rider
+            - Assigning riders
+            - Rider acceptance
         """
 
         fulfillment = cls._lock_fulfillment(
@@ -441,9 +430,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.READY_FOR_DISPATCH
         )
 
-        fulfillment.ready_for_dispatch_at = (
-            timezone.now()
-        )
+        fulfillment.ready_for_dispatch_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -470,13 +457,23 @@ class OrderFulfillmentService:
         fulfillment,
     ):
         """
-        Create the Delivery belonging to this fulfillment.
+        Create the Delivery belonging to a fulfillment.
 
-        Pickup information comes from the immutable
-        OrderFulfillment store snapshot.
+        Delivery is the logistics entity.
 
-        Destination information comes from the
-        OrderAddress snapshot.
+        The fulfillment provides:
+
+            - Vendor
+            - Pickup store
+            - Pickup snapshot
+            - Pricing
+            - Currency
+
+        The order address provides:
+
+            - Customer destination
+            - Destination contact
+            - Destination coordinates
         """
 
         existing_delivery = (
@@ -488,85 +485,52 @@ class OrderFulfillmentService:
         )
 
         if existing_delivery:
+
+            cls._ensure_delivery_addresses(
+                delivery=existing_delivery,
+                fulfillment=fulfillment,
+            )
+
             return existing_delivery
 
         order = fulfillment.order
 
-        address = cls._get_delivery_address(
+        destination = cls._get_delivery_address(
             order=order,
         )
 
+        total_package_weight = (
+            cls._calculate_total_package_weight(
+                fulfillment=fulfillment,
+            )
+        )
+
+        package_count = (
+            fulfillment.packages.count()
+        )
+
+        delivery_total = (
+            fulfillment.delivery_fee
+            + fulfillment.service_fee
+            + fulfillment.insurance_fee
+            - fulfillment.discount_amount
+        )
+
+        if delivery_total < Decimal("0.00"):
+            delivery_total = Decimal("0.00")
+
         delivery = Delivery.objects.create(
-
-            # ------------------------------------------
-            # Fulfillment
-            # ------------------------------------------
-
             fulfillment=fulfillment,
-
-            # ------------------------------------------
-            # Customer
-            # ------------------------------------------
 
             customer=order.customer,
 
-            # ------------------------------------------
-            # Vendor
-            # ------------------------------------------
-
-            vendor=(
-                fulfillment.store.vendor
-            ),
-
-            # ------------------------------------------
-            # Pickup Store
-            # ------------------------------------------
+            vendor=fulfillment.store.vendor,
 
             pickup_store=fulfillment.store,
 
             pickup_store_name=(
                 fulfillment.store_name
             ),
-
-            # ------------------------------------------
-            # Pickup Snapshot
-            # ------------------------------------------
-
-            pickup_latitude=(
-                fulfillment.store_latitude
-            ),
-
-            pickup_longitude=(
-                fulfillment.store_longitude
-            ),
-
-            pickup_address=(
-                cls._build_pickup_address(
-                    fulfillment=fulfillment,
-                )
-            ),
-
-            # ------------------------------------------
-            # Destination Snapshot
-            # ------------------------------------------
-
-            destination_latitude=(
-                address.latitude
-            ),
-
-            destination_longitude=(
-                address.longitude
-            ),
-
-            destination_address=(
-                cls._build_destination_address(
-                    address=address,
-                )
-            ),
-
-            # ------------------------------------------
-            # Delivery
-            # ------------------------------------------
 
             delivery_type=(
                 Delivery.DeliveryType.INSTANT
@@ -580,9 +544,7 @@ class OrderFulfillmentService:
                 Delivery.PaymentStatus.PAID
             ),
 
-            # ------------------------------------------
-            # Pricing
-            # ------------------------------------------
+            currency=fulfillment.currency,
 
             estimated_price=(
                 fulfillment.delivery_fee
@@ -610,18 +572,439 @@ class OrderFulfillmentService:
                 fulfillment.service_fee
             ),
 
-            total_price=(
-                fulfillment.delivery_fee
-                + fulfillment.service_fee
-                + fulfillment.insurance_fee
+            total_price=delivery_total,
+
+            total_package_weight=(
+                total_package_weight
             ),
 
+            package_count=package_count,
+        )
+
+        cls._create_delivery_addresses(
+            delivery=delivery,
+            fulfillment=fulfillment,
+            destination=destination,
         )
 
         return delivery
 
     # ==================================================
-    # Delivery Address
+    # Ensure Delivery Addresses
+    # ==================================================
+
+    @classmethod
+    def _ensure_delivery_addresses(
+        cls,
+        *,
+        delivery,
+        fulfillment,
+    ):
+        """
+        Ensure that both operational delivery addresses
+        exist.
+
+        This makes delivery creation idempotent and also
+        repairs an incomplete delivery if address creation
+        was interrupted.
+        """
+
+        destination = cls._get_delivery_address(
+            order=fulfillment.order,
+        )
+
+        cls._create_delivery_addresses(
+            delivery=delivery,
+            fulfillment=fulfillment,
+            destination=destination,
+        )
+
+    # ==================================================
+    # Create Delivery Addresses
+    # ==================================================
+
+    @classmethod
+    def _create_delivery_addresses(
+        cls,
+        *,
+        delivery,
+        fulfillment,
+        destination,
+    ):
+        """
+        Create the pickup and delivery addresses.
+
+        DeliveryAddress contains the operational snapshot
+        used during actual delivery.
+
+        Pickup:
+
+            Comes from OrderFulfillment's store snapshot.
+
+        Destination:
+
+            Comes from the immutable OrderAddress snapshot.
+        """
+
+        pickup_exists = (
+            DeliveryAddress.objects
+            .filter(
+                delivery=delivery,
+                address_type=(
+                    DeliveryAddress.AddressType.PICKUP
+                ),
+            )
+            .exists()
+        )
+
+        if not pickup_exists:
+
+            cls._create_pickup_address(
+                delivery=delivery,
+                fulfillment=fulfillment,
+            )
+
+        destination_exists = (
+            DeliveryAddress.objects
+            .filter(
+                delivery=delivery,
+                address_type=(
+                    DeliveryAddress.AddressType.DELIVERY
+                ),
+            )
+            .exists()
+        )
+
+        if not destination_exists:
+
+            cls._create_destination_address(
+                delivery=delivery,
+                address=destination,
+            )
+
+    # ==================================================
+    # Pickup Delivery Address
+    # ==================================================
+
+    @staticmethod
+    def _create_pickup_address(
+        *,
+        delivery,
+        fulfillment,
+    ):
+        """
+        Create the operational pickup address.
+
+        DeliveryAddress fields are populated from the
+        immutable OrderFulfillment store snapshot.
+        """
+
+        DeliveryAddress.objects.create(
+            delivery=delivery,
+
+            address_type=(
+                DeliveryAddress.AddressType.PICKUP
+            ),
+
+            contact_name=(
+                fulfillment.store_name
+            ),
+
+            contact_phone=(
+                OrderFulfillmentService
+                ._get_store_contact_phone(
+                    fulfillment=fulfillment,
+                )
+            ),
+
+            address_line_1=(
+                fulfillment.store_address_line_1
+            ),
+
+            address_line_2=(
+                fulfillment.store_address_line_2
+            ),
+
+            city=(
+                fulfillment.store_city
+            ),
+
+            state=(
+                fulfillment.store_state
+            ),
+
+            country=(
+                fulfillment.store_country
+            ),
+
+            postal_code=(
+                fulfillment.store_postal_code
+            ),
+
+            latitude=(
+                fulfillment.store_latitude
+            ),
+
+            longitude=(
+                fulfillment.store_longitude
+            ),
+        )
+
+    # ==================================================
+    # Destination Delivery Address
+    # ==================================================
+
+    @staticmethod
+    def _create_destination_address(
+        *,
+        delivery,
+        address,
+    ):
+        """
+        Create the operational destination address.
+
+        The destination is copied from the immutable
+        order address snapshot.
+
+        No `address` field is used because DeliveryAddress
+        stores each address component separately.
+        """
+
+        contact_name = (
+            getattr(
+                address,
+                "contact_name",
+                None,
+            )
+            or getattr(
+                address,
+                "recipient_name",
+                None,
+            )
+            or getattr(
+                address,
+                "full_name",
+                None,
+            )
+            or ""
+        )
+
+        contact_phone = (
+            getattr(
+                address,
+                "contact_phone",
+                None,
+            )
+            or getattr(
+                address,
+                "phone",
+                None,
+            )
+            or ""
+        )
+
+        address_line_1 = (
+            getattr(
+                address,
+                "address_line_1",
+                "",
+            )
+            or ""
+        )
+
+        address_line_2 = (
+            getattr(
+                address,
+                "address_line_2",
+                "",
+            )
+            or ""
+        )
+
+        city = (
+            getattr(
+                address,
+                "city",
+                "",
+            )
+            or ""
+        )
+
+        state = (
+            getattr(
+                address,
+                "state",
+                "",
+            )
+            or ""
+        )
+
+        country = (
+            getattr(
+                address,
+                "country",
+                "Nigeria",
+            )
+            or "Nigeria"
+        )
+
+        postal_code = (
+            getattr(
+                address,
+                "postal_code",
+                "",
+            )
+            or ""
+        )
+
+        landmark = (
+            getattr(
+                address,
+                "landmark",
+                "",
+            )
+            or ""
+        )
+
+        latitude = getattr(
+            address,
+            "latitude",
+            None,
+        )
+
+        longitude = getattr(
+            address,
+            "longitude",
+            None,
+        )
+
+        if not contact_name.strip():
+
+            raise ValueError(
+                "Delivery address does not have "
+                "a contact name."
+            )
+
+        if not contact_phone.strip():
+
+            raise ValueError(
+                "Delivery address does not have "
+                "a contact phone."
+            )
+
+        if not address_line_1.strip():
+
+            raise ValueError(
+                "Delivery address does not have "
+                "address line 1."
+            )
+
+        if latitude is None or longitude is None:
+
+            raise ValueError(
+                "Delivery address must have "
+                "latitude and longitude."
+            )
+
+        DeliveryAddress.objects.create(
+            delivery=delivery,
+
+            address_type=(
+                DeliveryAddress.AddressType.DELIVERY
+            ),
+
+            contact_name=contact_name,
+
+            contact_phone=contact_phone,
+
+            address_line_1=address_line_1,
+
+            address_line_2=address_line_2,
+
+            city=city,
+
+            state=state,
+
+            country=country,
+
+            postal_code=postal_code,
+
+            landmark=landmark,
+
+            latitude=latitude,
+
+            longitude=longitude,
+        )
+
+    # ==================================================
+    # Store Contact Phone
+    # ==================================================
+
+    @staticmethod
+    def _get_store_contact_phone(
+        *,
+        fulfillment,
+    ):
+        """
+        Resolve the store's operational contact phone.
+
+        The fulfillment model currently does not contain a
+        store phone snapshot, so the live store/vendor
+        relationship is used as a fallback.
+
+        If you later add `store_phone` to the fulfillment
+        snapshot, that field should become the preferred
+        source here.
+        """
+
+        store = fulfillment.store
+
+        possible_fields = [
+            "phone",
+            "phone_number",
+            "contact_phone",
+            "contact_number",
+        ]
+
+        for field_name in possible_fields:
+
+            value = getattr(
+                store,
+                field_name,
+                None,
+            )
+
+            if value:
+
+                return str(value).strip()
+
+        vendor = getattr(
+            store,
+            "vendor",
+            None,
+        )
+
+        if vendor:
+
+            for field_name in possible_fields:
+
+                value = getattr(
+                    vendor,
+                    field_name,
+                    None,
+                )
+
+                if value:
+
+                    return str(value).strip()
+
+        raise ValueError(
+            "Unable to determine the pickup store "
+            "contact phone."
+        )
+
+    # ==================================================
+    # Get Delivery Address
     # ==================================================
 
     @staticmethod
@@ -630,99 +1013,60 @@ class OrderFulfillmentService:
         order,
     ):
         """
-        Retrieve the immutable delivery address
-        belonging to the order.
+        Retrieve the immutable customer delivery
+        address belonging to the order.
 
-        Adjust `order.delivery_address` if your
-        OrderAddress related_name differs.
+        The current architecture expects:
+
+            order.delivery_address
         """
 
         try:
-            return order.delivery_address
-        except AttributeError:
+
+            address = order.delivery_address
+
+        except AttributeError as exc:
+
+            raise ValueError(
+                "Order does not have a delivery address."
+            ) from exc
+
+        if address is None:
 
             raise ValueError(
                 "Order does not have a delivery address."
             )
 
+        return address
+
     # ==================================================
-    # Pickup Address
+    # Calculate Package Weight
     # ==================================================
 
     @staticmethod
-    def _build_pickup_address(
+    def _calculate_total_package_weight(
         *,
         fulfillment,
     ):
-        parts = [
-            fulfillment.store_address_line_1,
-            fulfillment.store_address_line_2,
-            fulfillment.store_city,
-            fulfillment.store_state,
-            fulfillment.store_country,
-            fulfillment.store_postal_code,
-        ]
-
-        return ", ".join(
-            part
-            for part in parts
-            if part
-        )
-
-    # ==================================================
-    # Destination Address
-    # ==================================================
-
-    @staticmethod
-    def _build_destination_address(
-        *,
-        address,
-    ):
         """
-        Convert the OrderAddress snapshot into the
-        Delivery destination string.
-
-        Adjust field names to match your OrderAddress.
+        Calculate the total weight of all packages
+        belonging to the fulfillment.
         """
 
-        parts = [
-            getattr(
-                address,
-                "address_line_1",
-                "",
-            ),
-            getattr(
-                address,
-                "address_line_2",
-                "",
-            ),
-            getattr(
-                address,
-                "city",
-                "",
-            ),
-            getattr(
-                address,
-                "state",
-                "",
-            ),
-            getattr(
-                address,
-                "country",
-                "Nigeria",
-            ),
-            getattr(
-                address,
-                "postal_code",
-                "",
-            ),
-        ]
+        total_weight = Decimal("0.000")
 
-        return ", ".join(
-            part
-            for part in parts
-            if part
-        )
+        for package in fulfillment.packages.all():
+
+            weight = package.weight
+
+            if weight is None:
+                continue
+
+            total_weight += Decimal(
+                str(weight)
+            )
+
+        return total_weight
 
     # ==================================================
     # Dispatch
@@ -737,7 +1081,7 @@ class OrderFulfillmentService:
     ):
         """
         Mark fulfillment as dispatched after a rider
-        has been successfully assigned/accepted.
+        has been successfully assigned or accepted.
         """
 
         fulfillment = cls._lock_fulfillment(
@@ -761,6 +1105,7 @@ class OrderFulfillmentService:
         )
 
         if delivery is None:
+
             raise ValueError(
                 "Fulfillment does not have "
                 "a delivery."
@@ -780,9 +1125,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.DISPATCHED
         )
 
-        fulfillment.dispatched_at = (
-            timezone.now()
-        )
+        fulfillment.dispatched_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -821,9 +1164,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.OUT_FOR_DELIVERY
         )
 
-        fulfillment.out_for_delivery_at = (
-            timezone.now()
-        )
+        fulfillment.out_for_delivery_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -863,6 +1204,7 @@ class OrderFulfillmentService:
         )
 
         if not packages:
+
             raise ValueError(
                 "Fulfillment has no packages."
             )
@@ -875,6 +1217,7 @@ class OrderFulfillmentService:
         ]
 
         if not_delivered:
+
             raise ValueError(
                 "All packages must be delivered "
                 "before the fulfillment is "
@@ -885,9 +1228,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.DELIVERED
         )
 
-        fulfillment.delivered_at = (
-            timezone.now()
-        )
+        fulfillment.delivered_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -931,9 +1272,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.CANCELLED
         )
 
-        fulfillment.cancelled_at = (
-            timezone.now()
-        )
+        fulfillment.cancelled_at = timezone.now()
 
         fulfillment.save(
             update_fields=[
@@ -943,16 +1282,13 @@ class OrderFulfillmentService:
             ]
         )
 
-        # ----------------------------------------------
-        # Cancel delivery
-        # ----------------------------------------------
-
         Delivery.objects.filter(
             fulfillment=fulfillment,
         ).exclude(
             status=Delivery.DeliveryStatus.DELIVERED,
         ).update(
             status=Delivery.DeliveryStatus.CANCELLED,
+            cancelled_at=timezone.now(),
         )
 
         return fulfillment
@@ -989,6 +1325,39 @@ class OrderFulfillmentService:
             )
 
     # ==================================================
+    # Validate Package Values
+    # ==================================================
+
+    @staticmethod
+    def _validate_package_values(
+        *,
+        weight,
+        length,
+        width,
+        height,
+        declared_value,
+    ):
+        values = {
+            "weight": weight,
+            "length": length,
+            "width": width,
+            "height": height,
+            "declared_value": declared_value,
+        }
+
+        for field_name, value in values.items():
+
+            if value is None:
+                continue
+
+            if Decimal(str(value)) < Decimal("0"):
+
+                raise ValueError(
+                    f"{field_name.replace('_', ' ').capitalize()} "
+                    "cannot be negative."
+                )
+
+    # ==================================================
     # Validate Order
     # ==================================================
 
@@ -999,9 +1368,8 @@ class OrderFulfillmentService:
     ):
         order = fulfillment.order
 
-        if order.payment_status != (
-            Order.PaymentStatus.PAID
-        ):
+        if order.payment_status != Order.PaymentStatus.PAID:
+
             raise ValueError(
                 "Order must be paid before the "
                 "fulfillment can be processed."
@@ -1011,6 +1379,7 @@ class OrderFulfillmentService:
             Order.Status.CANCELLED,
             Order.Status.FAILED,
         ]:
+
             raise ValueError(
                 "The order cannot be fulfilled."
             )
@@ -1029,6 +1398,7 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.CANCELLED,
             OrderFulfillment.Status.FAILED,
         ]:
+
             raise ValueError(
                 "Fulfillment is in a terminal state."
             )
@@ -1088,7 +1458,7 @@ class OrderFulfillmentService:
     def _generate_package_number():
 
         return (
-            f"PKG-"
+            "PKG-"
             f"{timezone.now():%Y%m%d}-"
             f"{uuid.uuid4().hex[:10].upper()}"
         )
@@ -1101,7 +1471,7 @@ class OrderFulfillmentService:
     def _generate_package_tracking_number():
 
         return (
-            f"PKG-TRK-"
+            "PKG-TRK-"
             f"{uuid.uuid4().hex[:12].upper()}"
         )
 
@@ -1118,6 +1488,12 @@ class OrderFulfillmentService:
         """
         Recalculate the parent Order status based
         on all active fulfillments.
+
+        Cancelled fulfillments are excluded from the
+        active fulfillment calculation.
+
+        The order is considered delivered only when
+        every non-cancelled fulfillment is delivered.
         """
 
         order = (
@@ -1146,7 +1522,7 @@ class OrderFulfillmentService:
             return
 
         # ----------------------------------------------
-        # All delivered
+        # All Delivered
         # ----------------------------------------------
 
         if all(
@@ -1155,13 +1531,9 @@ class OrderFulfillmentService:
             for item in active_fulfillments
         ):
 
-            order.status = (
-                Order.Status.DELIVERED
-            )
+            order.status = Order.Status.DELIVERED
 
-            order.delivered_at = (
-                timezone.now()
-            )
+            order.delivered_at = timezone.now()
 
             order.save(
                 update_fields=[
@@ -1174,7 +1546,7 @@ class OrderFulfillmentService:
             return
 
         # ----------------------------------------------
-        # Any out for delivery
+        # Any Out For Delivery
         # ----------------------------------------------
 
         if any(
@@ -1183,9 +1555,7 @@ class OrderFulfillmentService:
             for item in active_fulfillments
         ):
 
-            order.status = (
-                Order.Status.OUT_FOR_DELIVERY
-            )
+            order.status = Order.Status.OUT_FOR_DELIVERY
 
             order.save(
                 update_fields=[
@@ -1197,7 +1567,7 @@ class OrderFulfillmentService:
             return
 
         # ----------------------------------------------
-        # Any dispatched
+        # Any Dispatched
         # ----------------------------------------------
 
         if any(
@@ -1206,9 +1576,7 @@ class OrderFulfillmentService:
             for item in active_fulfillments
         ):
 
-            order.status = (
-                Order.Status.PROCESSING
-            )
+            order.status = Order.Status.PROCESSING
 
             order.save(
                 update_fields=[
@@ -1220,7 +1588,7 @@ class OrderFulfillmentService:
             return
 
         # ----------------------------------------------
-        # Any ready
+        # Any Ready For Dispatch
         # ----------------------------------------------
 
         if any(
@@ -1229,9 +1597,7 @@ class OrderFulfillmentService:
             for item in active_fulfillments
         ):
 
-            order.status = (
-                Order.Status.READY_FOR_DISPATCH
-            )
+            order.status = Order.Status.READY_FOR_DISPATCH
 
             order.save(
                 update_fields=[
@@ -1243,7 +1609,7 @@ class OrderFulfillmentService:
             return
 
         # ----------------------------------------------
-        # Any processing
+        # Any Processing / Packing
         # ----------------------------------------------
 
         if any(
@@ -1255,9 +1621,7 @@ class OrderFulfillmentService:
             for item in active_fulfillments
         ):
 
-            order.status = (
-                Order.Status.PROCESSING
-            )
+            order.status = Order.Status.PROCESSING
 
             order.save(
                 update_fields=[
@@ -1265,3 +1629,26 @@ class OrderFulfillmentService:
                     "updated_at",
                 ]
             )
+
+            return
+
+        # ----------------------------------------------
+        # Any Pending
+        # ----------------------------------------------
+
+        if any(
+            item.status
+            == OrderFulfillment.Status.PENDING
+            for item in active_fulfillments
+        ):
+
+            order.status = Order.Status.PENDING
+
+            order.save(
+                update_fields=[
+                    "status",
+                    "updated_at",
+                ]
+            )
+
+            return
