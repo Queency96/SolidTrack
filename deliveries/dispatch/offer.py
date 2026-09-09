@@ -15,141 +15,66 @@ from .exceptions import InvalidOfferState
 
 class DeliveryOfferService:
     """
-    Handles the lifecycle of DeliveryOffer.
+    Service responsible exclusively for the DeliveryOffer lifecycle.
 
-    ============================================================
-    RESPONSIBILITIES
-    ============================================================
+    Responsibilities
+    ----------------
+    - Create offers
+    - Accept offers
+    - Reject offers
+    - Expire offers
+    - Cancel pending offers
+    - Validate offer state
+    - Lock offer/delivery rows where required
 
-    This service is responsible for:
+    NOT responsible for
+    -------------------
+    - Creating DeliveryAssignment
+    - Accepting DeliveryAssignment
+    - Completing assignments
+    - Cancelling assignments
+    - Reassigning riders
+    - Managing rider availability
+    - Redispatching
+    - Notifications
+    - Dispatch orchestration
 
-        • Creating offers
-        • Accepting offers
-        • Rejecting offers
-        • Expiring offers
-        • Cancelling pending offers
-        • Validating offer state
-        • Locking offer/delivery rows where required
-
-    This service does NOT directly manage:
-
-        • DeliveryAssignment lifecycle
-        • Rider availability
-        • Rider assignment state transitions
-        • Assignment cancellation
-        • Redispatch logic
-        • Notifications
-
-    Assignment responsibilities belong to:
+    Those responsibilities belong to:
 
         AssignmentService
-
-    Dispatch responsibilities belong to:
-
         DispatchCoordinator
         DispatchPipeline
-
-    Notification responsibilities belong to:
-
         DispatchNotifier
 
+    Assignment reuse
+    ----------------
+    This service supports the project's single-assignment-row
+    architecture.
 
-    ============================================================
-    OFFER LIFECYCLE
-    ============================================================
+    A delivery may receive a new rider offer when:
 
-        PENDING
-            ├── ACCEPTED
-            ├── REJECTED
-            ├── EXPIRED
-            └── CANCELLED
+        1. It has never had an assignment, OR
+        2. It has a CANCELLED assignment and the delivery has
+           explicitly been restarted into WAITING_FOR_RIDER.
+
+    In case (2), this service does NOT create another assignment.
+
+    AssignmentService is responsible for reusing the existing
+    cancelled DeliveryAssignment when the new offer is accepted.
+    """
+
+    # ============================================================
+    # OFFER LIFECYCLE
+    # ============================================================
+
+    """
+    PENDING
+        ├── ACCEPTED
+        ├── REJECTED
+        ├── EXPIRED
+        └── CANCELLED
 
     An offer can never return to PENDING.
-
-
-    ============================================================
-    OFFER VS ASSIGNMENT
-    ============================================================
-
-    DeliveryOffer != DeliveryAssignment
-
-    DeliveryOffer:
-
-        Temporary invitation sent to a rider.
-
-    DeliveryAssignment:
-
-        Actual rider assignment created after
-        the rider accepts the offer.
-
-
-    ============================================================
-    ACCEPTANCE FLOW
-    ============================================================
-
-    When a rider accepts an offer:
-
-        1. Lock the offer.
-        2. Validate that it is still actionable.
-        3. Lock the delivery.
-        4. Mark the offer ACCEPTED.
-        5. Ask AssignmentService to create the assignment.
-        6. AssignmentService creates ASSIGNED assignment.
-        7. AssignmentService marks rider unavailable.
-        8. AssignmentService changes delivery to RIDER_ASSIGNED.
-        9. AssignmentService cancels competing pending offers.
-        10. AssignmentService changes assignment to ACCEPTED.
-        11. Delivery becomes RIDER_ACCEPTED.
-
-    All of these operations occur inside one database transaction.
-
-    Therefore, if assignment creation fails:
-
-        Offer acceptance is rolled back.
-
-    This prevents:
-
-        Offer = ACCEPTED
-        Assignment = does not exist
-
-
-    ============================================================
-    MAXIMUM ASSIGNMENT RULE
-    ============================================================
-
-    The project uses:
-
-        max_rider_assignments = 1
-
-    Therefore a delivery may have only one
-    DeliveryAssignment during its lifetime.
-
-    Example:
-
-        Rider A → rejected
-        Rider B → expired
-        Rider C → cancelled
-        Rider D → accepted
-        Rider D → Assignment #1
-
-    After Assignment #1 exists:
-
-        Rider E → cannot receive another assignment.
-
-
-    ============================================================
-    IMPORTANT
-    ============================================================
-
-    DeliveryOfferService does NOT manually check or increment
-    the assignment count.
-
-    AssignmentService is the single authority responsible for
-    enforcing:
-
-        max_rider_assignments
-
-    This avoids duplicated business logic.
     """
 
     # ============================================================
@@ -168,16 +93,26 @@ class DeliveryOfferService:
         """
         Create a new PENDING DeliveryOffer.
 
-        A rider cannot have multiple pending offers for the
-        same delivery.
+        Rules
+        -----
+        - Delivery is required.
+        - Rider is required.
+        - Timeout must be a positive integer.
+        - Radius must be a positive number.
+        - Delivery must be eligible for dispatch.
+        - A rider cannot have another PENDING offer for
+          the same delivery.
+        - An active/completed assignment prevents a new offer.
+        - A CANCELLED assignment may be reused only when the
+          delivery is explicitly WAITING_FOR_RIDER.
+        - This method never creates a DeliveryAssignment.
 
-        The delivery row is locked before validation.
-
-        This method does NOT create a DeliveryAssignment.
+        Assignment lifecycle remains exclusively owned by
+        AssignmentService.
         """
 
         # --------------------------------------------------------
-        # Required values
+        # Validate required values
         # --------------------------------------------------------
 
         if delivery is None:
@@ -191,27 +126,54 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Validate timeout
+        # Normalize timeout
         # --------------------------------------------------------
 
         timeout = cls._validate_timeout(
-            timeout,
+            timeout
         )
 
         # --------------------------------------------------------
-        # Validate radius
+        # Normalize search radius
         # --------------------------------------------------------
 
         radius = cls._validate_radius(
-            radius,
+            radius
         )
 
         # --------------------------------------------------------
+        # Validate rider primary key
+        # --------------------------------------------------------
+
+        rider_id = getattr(
+            rider,
+            "pk",
+            None,
+        )
+
+        if rider_id is None:
+            raise InvalidOfferState(
+                "Rider must be a persisted database object."
+            )
+
+        # --------------------------------------------------------
         # Lock delivery
+        #
+        # Delivery is the synchronization point for dispatch.
+        #
+        # Global lock order:
+        #
+        #     Delivery
+        #         ↓
+        #     Offer / Assignment
+        #         ↓
+        #     RiderProfile
+        #
+        # This prevents inconsistent locking across services.
         # --------------------------------------------------------
 
         delivery = cls._lock_delivery(
-            delivery,
+            delivery
         )
 
         # --------------------------------------------------------
@@ -219,21 +181,22 @@ class DeliveryOfferService:
         # --------------------------------------------------------
 
         cls._validate_delivery(
-            delivery,
+            delivery
         )
 
         # --------------------------------------------------------
         # Prevent duplicate pending offer
+        #
+        # Delivery is already locked, so all callers using this
+        # service serialize offer creation for this delivery.
         # --------------------------------------------------------
 
         existing_offer = (
             DeliveryOffer.objects
             .filter(
                 delivery_id=delivery.pk,
-                rider_id=rider.pk,
-                status=(
-                    DeliveryOffer.Status.PENDING
-                ),
+                rider_id=rider_id,
+                status=DeliveryOffer.Status.PENDING,
             )
             .first()
         )
@@ -250,11 +213,8 @@ class DeliveryOfferService:
 
         now = timezone.now()
 
-        expires_at = (
-            now
-            + timedelta(
-                seconds=timeout,
-            )
+        expires_at = now + timedelta(
+            seconds=timeout
         )
 
         # --------------------------------------------------------
@@ -266,9 +226,7 @@ class DeliveryOfferService:
             rider=rider,
             search_radius=radius,
             expires_at=expires_at,
-            status=(
-                DeliveryOffer.Status.PENDING
-            ),
+            status=DeliveryOffer.Status.PENDING,
         )
 
     # ============================================================
@@ -277,169 +235,152 @@ class DeliveryOfferService:
 
     @classmethod
     @transaction.atomic
-    def accept(
-        cls,
-        offer,
-    ):
+    def accept(cls, offer):
         """
-        Accept a DeliveryOffer and create the corresponding
-        DeliveryAssignment.
-
-        Complete lifecycle:
-
-            OFFER
-
-                PENDING
-                    ↓
-                ACCEPTED
-
-            ASSIGNMENT
-
-                does not exist
-                    ↓
-                ASSIGNED
-                    ↓
-                ACCEPTED
-
-            DELIVERY
-
-                WAITING_FOR_RIDER
-                    ↓
-                RIDER_ASSIGNED
-                    ↓
-                RIDER_ACCEPTED
-
+        Mark a pending DeliveryOffer as ACCEPTED.
 
         IMPORTANT
         ---------
+        This method does NOT create a DeliveryAssignment.
 
-        Assignment creation is delegated to AssignmentService.
+        Assignment creation/reuse belongs exclusively to:
 
-        This service never directly creates a DeliveryAssignment.
+            AssignmentService.assign()
 
-        The complete operation is atomic.
+        The orchestration layer is responsible for:
 
-        If AssignmentService.assign() fails:
+            1. Lock delivery
+            2. Lock offer
+            3. Validate offer
+            4. Accept offer
+            5. Create/reuse assignment
+            6. Accept assignment
 
-            • Offer acceptance rolls back.
-            • No assignment remains.
-            • Rider availability remains unchanged.
-            • Delivery status remains unchanged.
+        Lock order
+        ----------
+        Delivery is locked before Offer.
 
-        This prevents an inconsistent state such as:
+        This follows the project's global locking convention:
 
-            offer = ACCEPTED
-            assignment = missing
+            Delivery
+                ↓
+            Offer / Assignment
+                ↓
+            RiderProfile
+
+        Returns
+        -------
+        DeliveryOffer
+            The accepted offer.
+
+        Raises
+        ------
+        InvalidOfferState
+            If the offer is missing, expired, or no longer pending.
         """
 
         # --------------------------------------------------------
-        # Lock offer
+        # Validate offer object before accessing its ID
         # --------------------------------------------------------
 
-        offer = cls._lock_offer(
+        if offer is None:
+            raise InvalidOfferState(
+                "Delivery offer is required."
+            )
+
+        offer_id = getattr(
             offer,
+            "pk",
+            None,
         )
+
+        if offer_id is None:
+            raise InvalidOfferState(
+                "Invalid delivery offer."
+            )
+
+        # --------------------------------------------------------
+        # Retrieve the offer without locking first.
+        #
+        # We need delivery_id so that Delivery can be locked first.
+        # --------------------------------------------------------
+
+        try:
+            offer_snapshot = (
+                DeliveryOffer.objects
+                .select_related("delivery")
+                .get(
+                    pk=offer_id
+                )
+            )
+
+        except DeliveryOffer.DoesNotExist as exc:
+            raise InvalidOfferState(
+                "Delivery offer does not exist."
+            ) from exc
+
+        # --------------------------------------------------------
+        # Lock delivery FIRST
+        # --------------------------------------------------------
+
+        delivery = cls._lock_delivery(
+            offer_snapshot.delivery_id
+        )
+
+        # --------------------------------------------------------
+        # Lock offer SECOND
+        # --------------------------------------------------------
+
+        locked_offer = cls._lock_offer(
+            offer_id
+        )
+
+        # --------------------------------------------------------
+        # Ensure offer belongs to the locked delivery
+        # --------------------------------------------------------
+
+        if locked_offer.delivery_id != delivery.pk:
+            raise InvalidOfferState(
+                "Delivery offer does not belong to "
+                "the expected delivery."
+            )
 
         # --------------------------------------------------------
         # Validate offer
         # --------------------------------------------------------
 
         cls._validate_actionable(
-            offer,
+            locked_offer,
             action="accept",
-        )
-
-        # --------------------------------------------------------
-        # Lock delivery
-        #
-        # AssignmentService will also lock the delivery.
-        # Because this service already owns the transaction,
-        # PostgreSQL row locking remains safe and serialized.
-        # --------------------------------------------------------
-
-        delivery = cls._lock_delivery(
-            offer.delivery,
         )
 
         # --------------------------------------------------------
         # Validate delivery
         #
-        # The delivery must still be eligible when the rider
-        # accepts the offer.
+        # This intentionally allows:
+        #
+        #     CANCELLED assignment
+        #             +
+        #     WAITING_FOR_RIDER
+        #
+        # because AssignmentService will reuse that assignment.
         # --------------------------------------------------------
 
         cls._validate_delivery(
-            delivery,
+            delivery
         )
 
         # --------------------------------------------------------
-        # Mark offer as accepted
+        # Mark offer accepted
         # --------------------------------------------------------
 
-        now = timezone.now()
-
-        offer.status = (
-            DeliveryOffer.Status.ACCEPTED
+        return cls._update_status(
+            offer=locked_offer,
+            status=DeliveryOffer.Status.ACCEPTED,
         )
-
-        offer.responded_at = now
-
-        update_fields = [
-            "status",
-            "responded_at",
-        ]
-
-        if hasattr(
-            offer,
-            "updated_at",
-        ):
-            update_fields.append(
-                "updated_at",
-            )
-
-        offer.save(
-            update_fields=update_fields,
-        )
-
-        # --------------------------------------------------------
-        # Create assignment
-        #
-        # Import locally to avoid circular imports.
-        # --------------------------------------------------------
-
-        from .assignment import AssignmentService
-
-        assignment = (
-            AssignmentService.assign(
-                delivery=delivery,
-                rider=offer.rider,
-            )
-        )
-
-        # --------------------------------------------------------
-        # Move assignment from ASSIGNED → ACCEPTED
-        #
-        # AssignmentService owns the assignment lifecycle.
-        # --------------------------------------------------------
-
-        assignment = (
-            AssignmentService.accept(
-                assignment,
-            )
-        )
-
-        # --------------------------------------------------------
-        # Return both objects
-        #
-        # Returning the assignment makes the result immediately
-        # useful to the API/coordinator while the accepted offer
-        # remains available through offer.
-        # --------------------------------------------------------
-
-        return offer, assignment
 
     # ============================================================
-    # REJECT
+    # REJECT OFFER
     # ============================================================
 
     @classmethod
@@ -450,7 +391,7 @@ class DeliveryOfferService:
         reason="",
     ):
         """
-        Rider rejects a pending offer.
+        Reject a pending DeliveryOffer.
 
         Lifecycle:
 
@@ -460,17 +401,33 @@ class DeliveryOfferService:
 
         No assignment is created.
 
-        The delivery remains eligible for another rider offer.
+        Rejection does not consume the maximum rider assignment
+        allowance.
+
+        DispatchCoordinator is responsible for deciding whether
+        another rider should subsequently be offered the delivery.
         """
 
+        # --------------------------------------------------------
+        # Lock offer
+        # --------------------------------------------------------
+
         offer = cls._lock_offer(
-            offer,
+            offer
         )
+
+        # --------------------------------------------------------
+        # Validate offer
+        # --------------------------------------------------------
 
         cls._validate_actionable(
             offer,
             action="reject",
         )
+
+        # --------------------------------------------------------
+        # Normalize rejection reason
+        # --------------------------------------------------------
 
         reason = (
             str(reason).strip()
@@ -478,28 +435,27 @@ class DeliveryOfferService:
             else ""
         )
 
+        # --------------------------------------------------------
+        # Update state
+        # --------------------------------------------------------
+
         return cls._update_status(
             offer=offer,
-            status=(
-                DeliveryOffer.Status.REJECTED
-            ),
+            status=DeliveryOffer.Status.REJECTED,
             rejection_reason=reason,
         )
 
     # ============================================================
-    # EXPIRE
+    # EXPIRE OFFER
     # ============================================================
 
     @classmethod
     @transaction.atomic
-    def expire(
-        cls,
-        offer,
-    ):
+    def expire(cls, offer):
         """
-        Expire a pending offer.
+        Expire a pending DeliveryOffer.
 
-        The offer may only be expired after expires_at.
+        An offer can only be expired after expires_at.
 
         Lifecycle:
 
@@ -508,52 +464,56 @@ class DeliveryOfferService:
             EXPIRED
 
         No assignment is created.
+
+        Expiration does not consume the maximum rider assignment
+        allowance.
         """
 
+        # --------------------------------------------------------
+        # Lock offer
+        # --------------------------------------------------------
+
         offer = cls._lock_offer(
-            offer,
+            offer
         )
 
         # --------------------------------------------------------
-        # Status
+        # Validate status
         # --------------------------------------------------------
 
-        if (
-            offer.status
-            != DeliveryOffer.Status.PENDING
-        ):
+        if offer.status != DeliveryOffer.Status.PENDING:
             raise InvalidOfferState(
                 f"Offer with status "
                 f"'{offer.status}' cannot be expired."
             )
 
         # --------------------------------------------------------
-        # Expiration timestamp
+        # Validate expiration timestamp
         # --------------------------------------------------------
 
         if offer.expires_at is None:
             raise InvalidOfferState(
-                "This delivery offer has no "
-                "expiration time."
+                "This delivery offer has no expiration time."
             )
+
+        # --------------------------------------------------------
+        # Check expiration
+        # --------------------------------------------------------
 
         now = timezone.now()
 
-        # --------------------------------------------------------
-        # Not expired yet
-        # --------------------------------------------------------
-
         if offer.expires_at > now:
             raise InvalidOfferState(
-                "This delivery offer has not "
-                "expired yet."
+                "This delivery offer has not expired yet."
             )
+
+        # --------------------------------------------------------
+        # Update status
+        # --------------------------------------------------------
 
         return cls._update_status(
             offer=offer,
-            status=(
-                DeliveryOffer.Status.EXPIRED
-            ),
+            status=DeliveryOffer.Status.EXPIRED,
         )
 
     # ============================================================
@@ -562,16 +522,9 @@ class DeliveryOfferService:
 
     @classmethod
     @transaction.atomic
-    def cancel(
-        cls,
-        offer,
-    ):
+    def cancel(cls, offer):
         """
         Cancel a pending DeliveryOffer.
-
-        This cancels only the offer.
-
-        It does NOT cancel a DeliveryAssignment.
 
         Lifecycle:
 
@@ -579,24 +532,43 @@ class DeliveryOfferService:
                 ↓
             CANCELLED
 
-        Once an offer is ACCEPTED, it cannot be cancelled
-        through this method.
+        This cancels only the offer.
+
+        It does NOT:
+            - cancel an assignment
+            - change rider availability
+            - redispatch
+            - send notifications
+
+        Those responsibilities belong elsewhere.
+
+        An accepted offer cannot be cancelled through this method.
         """
 
+        # --------------------------------------------------------
+        # Lock offer
+        # --------------------------------------------------------
+
         offer = cls._lock_offer(
-            offer,
+            offer
         )
+
+        # --------------------------------------------------------
+        # Validate offer
+        # --------------------------------------------------------
 
         cls._validate_actionable(
             offer,
             action="cancel",
         )
 
+        # --------------------------------------------------------
+        # Update state
+        # --------------------------------------------------------
+
         return cls._update_status(
             offer=offer,
-            status=(
-                DeliveryOffer.Status.CANCELLED
-            ),
+            status=DeliveryOffer.Status.CANCELLED,
         )
 
     # ============================================================
@@ -604,11 +576,17 @@ class DeliveryOfferService:
     # ============================================================
 
     @staticmethod
-    def _lock_offer(
-        offer,
-    ):
+    def _lock_offer(offer):
         """
-        Lock the DeliveryOffer row before changing state.
+        Retrieve and lock a DeliveryOffer row.
+
+        The returned object is the database-authoritative
+        version of the offer.
+
+        This method accepts either:
+
+            DeliveryOffer instance
+            DeliveryOffer primary key
         """
 
         if offer is None:
@@ -616,13 +594,31 @@ class DeliveryOfferService:
                 "Delivery offer is required."
             )
 
-        try:
+        # --------------------------------------------------------
+        # Resolve primary key
+        # --------------------------------------------------------
+
+        if isinstance(
+            offer,
+            DeliveryOffer,
+        ):
             offer_id = offer.pk
 
-        except AttributeError:
+        else:
+            offer_id = getattr(
+                offer,
+                "pk",
+                offer,
+            )
+
+        if offer_id is None:
             raise InvalidOfferState(
                 "Invalid delivery offer."
             )
+
+        # --------------------------------------------------------
+        # Lock row
+        # --------------------------------------------------------
 
         try:
             return (
@@ -633,31 +629,31 @@ class DeliveryOfferService:
                     "rider",
                 )
                 .get(
-                    pk=offer_id,
+                    pk=offer_id
                 )
             )
 
-        except DeliveryOffer.DoesNotExist:
+        except DeliveryOffer.DoesNotExist as exc:
             raise InvalidOfferState(
                 "Delivery offer does not exist."
-            )
+            ) from exc
 
     # ============================================================
     # LOCK DELIVERY
     # ============================================================
 
     @staticmethod
-    def _lock_delivery(
-        delivery,
-    ):
+    def _lock_delivery(delivery):
         """
-        Lock the Delivery row.
+        Retrieve and lock a Delivery row.
 
-        The Delivery row is the synchronization point for
-        assignment creation.
+        Delivery acts as the synchronization point for
+        dispatch and assignment operations.
 
-        AssignmentService also locks the delivery before
-        enforcing the lifetime assignment limit.
+        The method accepts either:
+
+            Delivery instance
+            Delivery primary key
         """
 
         if delivery is None:
@@ -665,25 +661,38 @@ class DeliveryOfferService:
                 "Delivery is required."
             )
 
+        # --------------------------------------------------------
+        # Resolve primary key
+        # --------------------------------------------------------
+
         delivery_id = getattr(
             delivery,
             "pk",
             delivery,
         )
 
+        if delivery_id is None:
+            raise InvalidOfferState(
+                "Invalid delivery."
+            )
+
+        # --------------------------------------------------------
+        # Lock row
+        # --------------------------------------------------------
+
         try:
             return (
                 Delivery.objects
                 .select_for_update()
                 .get(
-                    pk=delivery_id,
+                    pk=delivery_id
                 )
             )
 
-        except Delivery.DoesNotExist:
+        except Delivery.DoesNotExist as exc:
             raise InvalidOfferState(
                 "Delivery does not exist."
-            )
+            ) from exc
 
     # ============================================================
     # VALIDATE ACTIONABLE OFFER
@@ -695,28 +704,30 @@ class DeliveryOfferService:
         action,
     ):
         """
-        Validate whether an offer can perform a rider action.
+        Validate whether an offer can perform an action.
 
-        Supported interactive actions:
+        Supported actions:
 
-            • accept
-            • reject
-            • cancel
+            accept
+            reject
+            cancel
 
-        Only PENDING offers can perform these actions.
+        Only PENDING offers may perform these actions.
 
-        Expiration is checked here so a rider cannot accept,
-        reject, or cancel an already expired offer.
+        Expiration is checked here so a rider cannot interact
+        with an offer whose expiration time has already passed.
         """
 
+        if offer is None:
+            raise InvalidOfferState(
+                "Delivery offer is required."
+            )
+
         # --------------------------------------------------------
-        # Status
+        # Status validation
         # --------------------------------------------------------
 
-        if (
-            offer.status
-            != DeliveryOffer.Status.PENDING
-        ):
+        if offer.status != DeliveryOffer.Status.PENDING:
             raise InvalidOfferState(
                 f"Offer with status "
                 f"'{offer.status}' cannot be "
@@ -724,14 +735,17 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Expiration
+        # Expiration timestamp
         # --------------------------------------------------------
 
         if offer.expires_at is None:
             raise InvalidOfferState(
-                "This delivery offer has no "
-                "expiration time."
+                "This delivery offer has no expiration time."
             )
+
+        # --------------------------------------------------------
+        # Expiration validation
+        # --------------------------------------------------------
 
         if offer.expires_at <= timezone.now():
             raise InvalidOfferState(
@@ -749,13 +763,15 @@ class DeliveryOfferService:
         **extra_fields,
     ):
         """
-        Update the DeliveryOffer lifecycle state.
+        Safely update a DeliveryOffer lifecycle state.
 
-        Rules:
-
-            • PENDING can never be restored.
-            • Terminal offers cannot be changed.
-            • responded_at is recorded on every terminal state.
+        Rules
+        -----
+        - PENDING can never be restored.
+        - Terminal states cannot transition to another
+          terminal state.
+        - responded_at is recorded for terminal transitions.
+        - updated_at is included when available.
         """
 
         if offer is None:
@@ -764,13 +780,10 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Never return to PENDING
+        # Prevent transition back to PENDING
         # --------------------------------------------------------
 
-        if (
-            status
-            == DeliveryOffer.Status.PENDING
-        ):
+        if status == DeliveryOffer.Status.PENDING:
             raise InvalidOfferState(
                 "Lifecycle update cannot transition "
                 "an offer back to PENDING."
@@ -787,6 +800,10 @@ class DeliveryOfferService:
             DeliveryOffer.Status.CANCELLED,
         }
 
+        # --------------------------------------------------------
+        # Prevent terminal → terminal transitions
+        # --------------------------------------------------------
+
         if (
             offer.status in terminal_statuses
             and offer.status != status
@@ -798,7 +815,16 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Update
+        # Prevent same-status update
+        # --------------------------------------------------------
+
+        if offer.status == status:
+            raise InvalidOfferState(
+                f"Offer is already in status '{status}'."
+            )
+
+        # --------------------------------------------------------
+        # Update status
         # --------------------------------------------------------
 
         now = timezone.now()
@@ -812,10 +838,19 @@ class DeliveryOfferService:
         ]
 
         # --------------------------------------------------------
-        # Extra fields
+        # Additional fields
         # --------------------------------------------------------
 
         for field_name, value in extra_fields.items():
+
+            if not hasattr(
+                offer,
+                field_name,
+            ):
+                raise InvalidOfferState(
+                    f"DeliveryOffer does not have "
+                    f"field '{field_name}'."
+                )
 
             setattr(
                 offer,
@@ -824,7 +859,7 @@ class DeliveryOfferService:
             )
 
             update_fields.append(
-                field_name,
+                field_name
             )
 
         # --------------------------------------------------------
@@ -836,11 +871,19 @@ class DeliveryOfferService:
             "updated_at",
         ):
             update_fields.append(
-                "updated_at",
+                "updated_at"
             )
 
+        # --------------------------------------------------------
+        # Save
+        # --------------------------------------------------------
+
         offer.save(
-            update_fields=update_fields,
+            update_fields=list(
+                dict.fromkeys(
+                    update_fields
+                )
+            )
         )
 
         return offer
@@ -850,23 +893,33 @@ class DeliveryOfferService:
     # ============================================================
 
     @classmethod
-    def _validate_delivery(
-        cls,
-        delivery,
-    ):
+    def _validate_delivery(cls, delivery):
         """
-        Ensure the delivery can receive a rider offer.
+        Validate whether a Delivery can receive a rider offer.
 
-        Eligible states:
+        Valid delivery states:
 
             PENDING
             WAITING_FOR_RIDER
 
-        A delivery that already has an assignment cannot receive
-        another offer.
+        Assignment rules
+        ----------------
+        No assignment exists:
+            → offer allowed
 
-        AssignmentService remains the final authority for the
-        lifetime assignment limit.
+        CANCELLED assignment + WAITING_FOR_RIDER:
+            → offer allowed
+
+        Active assignment:
+            → offer rejected
+
+        COMPLETED assignment:
+            → offer rejected
+
+        This method does NOT create or reuse assignments.
+
+        AssignmentService remains the final authority for
+        assignment creation/reuse and rider assignment limits.
         """
 
         if delivery is None:
@@ -875,7 +928,7 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Allowed delivery statuses
+        # Validate delivery status
         # --------------------------------------------------------
 
         assignable_statuses = {
@@ -891,53 +944,142 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Direct rider relationship
+        # Existing direct rider
+        #
+        # Some Delivery implementations may expose rider_id.
+        #
+        # If populated, the delivery is already assigned and
+        # therefore cannot receive another offer.
         # --------------------------------------------------------
 
-        if getattr(
+        rider_id = getattr(
             delivery,
             "rider_id",
             None,
-        ):
+        )
+
+        if rider_id:
             raise InvalidOfferState(
                 "Delivery already has a rider assigned."
             )
 
         # --------------------------------------------------------
-        # Existing assignment
+        # Locate lifetime assignment
         #
-        # This deliberately checks historical assignments, not
-        # only active assignments.
-        #
-        # Therefore a cancelled assignment still prevents a new
-        # offer from being created.
+        # The project architecture permits at most one
+        # DeliveryAssignment row during the delivery lifetime.
         # --------------------------------------------------------
 
-        has_assignment = (
+        assignment = (
             DeliveryAssignment.objects
             .filter(
-                delivery=delivery,
+                delivery_id=delivery.pk,
             )
-            .exists()
+            .order_by("-pk")
+            .first()
         )
 
-        if has_assignment:
+        # --------------------------------------------------------
+        # No historical assignment
+        # --------------------------------------------------------
+
+        if assignment is None:
+            return
+
+        # --------------------------------------------------------
+        # Existing assignment status
+        # --------------------------------------------------------
+
+        assignment_status = assignment.status
+
+        # --------------------------------------------------------
+        # CANCELLED assignment
+        #
+        # This is the only historical assignment state that may
+        # participate in a new dispatch cycle.
+        #
+        # The delivery MUST explicitly be WAITING_FOR_RIDER.
+        #
+        # AssignmentService.assign() will later reuse this same
+        # assignment row.
+        # --------------------------------------------------------
+
+        if (
+            assignment_status
+            == DeliveryAssignment.Status.CANCELLED
+        ):
+
+            if (
+                delivery.status
+                != Delivery.DeliveryStatus.WAITING_FOR_RIDER
+            ):
+                raise InvalidOfferState(
+                    "A cancelled assignment can only "
+                    "receive a new rider offer after "
+                    "the delivery has been restarted "
+                    "into WAITING_FOR_RIDER."
+                )
+
+            return
+
+        # --------------------------------------------------------
+        # COMPLETED assignment
+        #
+        # A completed assignment can never be reused.
+        # --------------------------------------------------------
+
+        if (
+            assignment_status
+            == DeliveryAssignment.Status.COMPLETED
+        ):
             raise InvalidOfferState(
-                "Delivery already has a rider "
-                "assignment and cannot receive "
-                "another rider offer."
+                "Delivery already has a completed "
+                "rider assignment."
             )
+
+        # --------------------------------------------------------
+        # Any other assignment state is considered active.
+        #
+        # Examples include:
+        #
+        #     ASSIGNED
+        #     ACCEPTED
+        #     EN_ROUTE_PICKUP
+        #     ARRIVED_PICKUP
+        #     PICKED_UP
+        #     OUT_FOR_DELIVERY
+        #     ARRIVED_DESTINATION
+        #
+        # These states must never receive another offer.
+        # --------------------------------------------------------
+
+        raise InvalidOfferState(
+            f"Delivery already has an active rider "
+            f"assignment with status "
+            f"'{assignment_status}'."
+        )
 
     # ============================================================
     # VALIDATE TIMEOUT
     # ============================================================
 
     @staticmethod
-    def _validate_timeout(
-        timeout,
-    ):
+    def _validate_timeout(timeout):
         """
         Normalize and validate offer timeout.
+
+        Returns
+        -------
+        int
+            Timeout in seconds.
+
+        Rules
+        -----
+        - Required.
+        - Must be numeric/integer-compatible.
+        - Must be greater than zero.
+        - Fractional seconds are rejected rather than silently
+          truncated.
         """
 
         if timeout is None:
@@ -945,36 +1087,71 @@ class DeliveryOfferService:
                 "Offer timeout is required."
             )
 
+        # --------------------------------------------------------
+        # Decimal normalization
+        # --------------------------------------------------------
+
         try:
-            timeout = int(
-                timeout,
+            normalized = Decimal(
+                str(timeout)
             )
 
         except (
+            InvalidOperation,
             TypeError,
             ValueError,
-        ):
+        ) as exc:
             raise InvalidOfferState(
-                "Offer timeout must be a valid integer."
-            )
+                "Offer timeout must be a valid number."
+            ) from exc
 
-        if timeout <= 0:
+        # --------------------------------------------------------
+        # Positive value
+        # --------------------------------------------------------
+
+        if normalized <= Decimal("0"):
             raise InvalidOfferState(
                 "Offer timeout must be greater than zero."
             )
 
-        return timeout
+        # --------------------------------------------------------
+        # Whole seconds only
+        # --------------------------------------------------------
+
+        if normalized != normalized.to_integral_value():
+            raise InvalidOfferState(
+                "Offer timeout must be a whole "
+                "number of seconds."
+            )
+
+        # --------------------------------------------------------
+        # Convert to integer
+        # --------------------------------------------------------
+
+        timeout_seconds = int(
+            normalized
+        )
+
+        if timeout_seconds <= 0:
+            raise InvalidOfferState(
+                "Offer timeout must be at least one second."
+            )
+
+        return timeout_seconds
 
     # ============================================================
     # VALIDATE RADIUS
     # ============================================================
 
     @staticmethod
-    def _validate_radius(
-        radius,
-    ):
+    def _validate_radius(radius):
         """
         Normalize and validate search radius.
+
+        Returns
+        -------
+        Decimal
+            Positive search radius.
         """
 
         if radius is None:
@@ -984,17 +1161,17 @@ class DeliveryOfferService:
 
         try:
             radius = Decimal(
-                str(radius),
+                str(radius)
             )
 
         except (
             InvalidOperation,
             TypeError,
             ValueError,
-        ):
+        ) as exc:
             raise InvalidOfferState(
                 "Search radius must be a valid number."
-            )
+            ) from exc
 
         if radius <= Decimal("0"):
             raise InvalidOfferState(

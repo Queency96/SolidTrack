@@ -1,8 +1,10 @@
 from decimal import Decimal
 import uuid
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+
 from common.models import TimeStampedModel
 from riders.models import RiderProfile
 
@@ -21,8 +23,8 @@ class Delivery(TimeStampedModel):
           ├── Package[]
           └── Delivery
                   ├── DeliveryAddress[]
-                  ├── Assignment
-                  └── Rider / Dispatch
+                  ├── DeliveryAssignment
+                  └── Dispatch / Offers
 
     Delivery is strictly a logistics entity.
 
@@ -239,13 +241,6 @@ class Delivery(TimeStampedModel):
     # ==================================================
     # Package Summary
     # ==================================================
-    #
-    # These are snapshots calculated from the packages
-    # belonging to the fulfillment.
-    #
-    # They allow pricing and dispatch to work without
-    # repeatedly aggregating package records.
-    #
 
     total_package_weight = models.DecimalField(
         max_digits=10,
@@ -481,7 +476,6 @@ class Delivery(TimeStampedModel):
     # ==================================================
 
     def __str__(self):
-
         return self.tracking_number
 
     # ==================================================
@@ -495,7 +489,6 @@ class Delivery(TimeStampedModel):
         # ----------------------------------------------
 
         if self.fulfillment_id is None:
-
             raise ValidationError(
                 {
                     "fulfillment": (
@@ -504,7 +497,6 @@ class Delivery(TimeStampedModel):
                     )
                 }
             )
-            
 
         # ----------------------------------------------
         # Customer
@@ -514,7 +506,6 @@ class Delivery(TimeStampedModel):
             self.customer_id
             != self.fulfillment.order.customer_id
         ):
-
             raise ValidationError(
                 {
                     "customer": (
@@ -526,14 +517,13 @@ class Delivery(TimeStampedModel):
             )
 
         # ----------------------------------------------
-        # Pick-up Store
+        # Pickup Store
         # ----------------------------------------------
 
         if (
             self.pickup_store_id
             != self.fulfillment.store_id
         ):
-
             raise ValidationError(
                 {
                     "pickup_store": (
@@ -551,7 +541,6 @@ class Delivery(TimeStampedModel):
             self.vendor_id
             != self.fulfillment.store.vendor_id
         ):
-
             raise ValidationError(
                 {
                     "vendor": (
@@ -571,7 +560,6 @@ class Delivery(TimeStampedModel):
             == self.DeliveryType.SCHEDULED
             and self.scheduled_at is None
         ):
-
             raise ValidationError(
                 {
                     "scheduled_at": (
@@ -582,16 +570,11 @@ class Delivery(TimeStampedModel):
                 }
             )
 
-        # ----------------------------------------------
-        # Instant Delivery
-        # ----------------------------------------------
-
         if (
             self.delivery_type
             == self.DeliveryType.INSTANT
             and self.scheduled_at is not None
         ):
-
             raise ValidationError(
                 {
                     "scheduled_at": (
@@ -609,7 +592,6 @@ class Delivery(TimeStampedModel):
             self.distance_km is not None
             and self.distance_km < Decimal("0.00")
         ):
-
             raise ValidationError(
                 {
                     "distance_km": (
@@ -623,11 +605,7 @@ class Delivery(TimeStampedModel):
         # Package Weight
         # ----------------------------------------------
 
-        if (
-            self.total_package_weight
-            < Decimal("0.000")
-        ):
-
+        if self.total_package_weight < Decimal("0.000"):
             raise ValidationError(
                 {
                     "total_package_weight": (
@@ -642,7 +620,6 @@ class Delivery(TimeStampedModel):
         # ----------------------------------------------
 
         if self.package_count < 0:
-
             raise ValidationError(
                 {
                     "package_count": (
@@ -677,7 +654,6 @@ class Delivery(TimeStampedModel):
             )
 
             if value < Decimal("0.00"):
-
                 raise ValidationError(
                     {
                         field_name: (
@@ -702,11 +678,9 @@ class Delivery(TimeStampedModel):
         )
 
         if calculated_total < Decimal("0.00"):
-
             calculated_total = Decimal("0.00")
 
         if self.total_price != calculated_total:
-
             raise ValidationError(
                 {
                     "total_price": (
@@ -759,7 +733,6 @@ class Delivery(TimeStampedModel):
                 required_field,
             ) is None
         ):
-
             raise ValidationError(
                 {
                     required_field: (
@@ -781,7 +754,6 @@ class Delivery(TimeStampedModel):
     ):
 
         if not self.tracking_number:
-
             self.tracking_number = (
                 f"DLV-"
                 f"{uuid.uuid4().hex[:12].upper()}"
@@ -800,7 +772,6 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_pending(self):
-
         return (
             self.status
             == self.DeliveryStatus.PENDING
@@ -808,7 +779,6 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_waiting_for_rider(self):
-
         return (
             self.status
             == self.DeliveryStatus.WAITING_FOR_RIDER
@@ -816,45 +786,31 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_assigned(self):
-
-        return self.status in [
-
+        return self.status in {
             self.DeliveryStatus.RIDER_ASSIGNED,
-
             self.DeliveryStatus.RIDER_ACCEPTED,
-
             self.DeliveryStatus.PICKED_UP,
-
             self.DeliveryStatus.IN_TRANSIT,
-
             self.DeliveryStatus.DELIVERED,
-        ]
+        }
 
     @property
     def is_picked_up(self):
-
-        return self.status in [
-
+        return self.status in {
             self.DeliveryStatus.PICKED_UP,
-
             self.DeliveryStatus.IN_TRANSIT,
-
             self.DeliveryStatus.DELIVERED,
-        ]
+        }
 
     @property
     def is_in_transit(self):
-
-        return self.status in [
-
+        return self.status in {
             self.DeliveryStatus.IN_TRANSIT,
-
             self.DeliveryStatus.DELIVERED,
-        ]
+        }
 
     @property
     def is_delivered(self):
-
         return (
             self.status
             == self.DeliveryStatus.DELIVERED
@@ -862,23 +818,62 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_cancelled(self):
-
         return (
             self.status
             == self.DeliveryStatus.CANCELLED
         )
 
     @property
+    def is_failed(self):
+        return (
+            self.status
+            == self.DeliveryStatus.FAILED
+        )
+
+    @property
     def is_terminal(self):
+        """
+        Business terminal state.
 
-        return self.status in [
+        FAILED is intentionally included here because the
+        delivery lifecycle itself has reached a failure state.
 
+        DispatchCoordinator should use its own dispatch-terminal
+        definition because FAILED deliveries remain retryable.
+        """
+
+        return self.status in {
             self.DeliveryStatus.DELIVERED,
-
             self.DeliveryStatus.CANCELLED,
-
             self.DeliveryStatus.FAILED,
-        ]
+        }
+
+    # ==================================================
+    # Dispatch Helpers
+    # ==================================================
+
+    @property
+    def is_dispatch_terminal(self):
+        """
+        Whether the delivery can never be dispatched again.
+        """
+
+        return self.status in {
+            self.DeliveryStatus.DELIVERED,
+            self.DeliveryStatus.CANCELLED,
+        }
+
+    @property
+    def is_dispatchable(self):
+        """
+        Whether dispatch may operate on the delivery.
+        """
+
+        return self.status in {
+            self.DeliveryStatus.PENDING,
+            self.DeliveryStatus.WAITING_FOR_RIDER,
+            self.DeliveryStatus.FAILED,
+        }
 
     # ==================================================
     # Address Helpers
@@ -886,14 +881,12 @@ class Delivery(TimeStampedModel):
 
     @property
     def pickup_address(self):
-
         return self.addresses.filter(
             address_type="PICKUP",
         ).first()
 
     @property
     def destination_address(self):
-
         return self.addresses.filter(
             address_type="DELIVERY",
         ).first()
@@ -927,6 +920,10 @@ class Delivery(TimeStampedModel):
             "latitude": address.latitude,
             "longitude": address.longitude,
         }
+
+    # ==================================================
+    # Route
+    # ==================================================
 
     @property
     def route(self):
