@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
-from order.models import Order
-from accounts.models import Address
+from order.models import Order, OrderAddress
+
 
 
 # ==================================================
@@ -307,7 +307,7 @@ class CheckoutSerializer(
         if shipping_address_id is not None:
 
             shipping_address = (
-                Address.objects
+                OrderAddress.objects
                 .filter(
                     pk=shipping_address_id,
                     user=customer,
@@ -365,7 +365,7 @@ class CheckoutSerializer(
         if billing_address_id is not None:
 
             billing_address = (
-                Address.objects
+                OrderAddress.objects
                 .filter(
                     pk=billing_address_id,
                     user=customer,

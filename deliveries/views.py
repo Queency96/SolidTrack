@@ -6,8 +6,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from accounts.permissions import IsCustomer
 from deliveries.models import DeliveryOffer
-from dispatch.coordinator import DispatchCoordinator
-from dispatch.serializers import (
+from deliveries.dispatch.coordinator import DispatchCoordinator
+from deliveries.dispatch.serializers import (
     DeliveryAssignmentSerializer,
     DeliveryOfferResponseSerializer,
 )
@@ -99,23 +99,6 @@ class PriceEstimateView(APIView):
 # ==========================================================
 # Delivery Offer Response
 # ==========================================================
-
-from django.shortcuts import get_object_or_404
-
-from rest_framework import status
-from rest_framework.generics import GenericAPIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-
-from deliveries.models.delivery_offer import DeliveryOffer
-
-from dispatch.coordinator import DispatchCoordinator
-from dispatch.serializers import (
-    DeliveryAssignmentSerializer,
-    DeliveryOfferResponseSerializer,
-)
-
-
 
 
 class DeliveryOfferResponseView(

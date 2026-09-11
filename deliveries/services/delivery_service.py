@@ -2,11 +2,11 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from order.models.package import Package
-from .models import (
+from ..models import (
     Delivery,
     DeliveryAddress,
 )
-from services.pricing_service import PricingService
+from .pricing_service import PricingService
 from deliveries.dispatch.coordinator import (
     DispatchCoordinator,
 )

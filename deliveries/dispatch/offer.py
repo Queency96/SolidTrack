@@ -1006,7 +1006,7 @@ class DeliveryOfferService:
 
         if (
             assignment_status
-            == DeliveryAssignment.Status.CANCELLED
+            == DeliveryAssignment.AssignmentStatus.CANCELLED
         ):
 
             if (
@@ -1030,7 +1030,7 @@ class DeliveryOfferService:
 
         if (
             assignment_status
-            == DeliveryAssignment.Status.COMPLETED
+            == DeliveryAssignment.AssignmentStatus.COMPLETED
         ):
             raise InvalidOfferState(
                 "Delivery already has a completed "

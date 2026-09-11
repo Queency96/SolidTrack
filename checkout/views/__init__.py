@@ -1,6 +1,6 @@
-from checkout.views import CheckoutView
+from .checkout_views import CheckoutView
 
 
-__All__ = [
-  'CheckoutView',
+__all__ = [
+    'CheckoutView',
 ]

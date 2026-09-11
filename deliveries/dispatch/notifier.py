@@ -536,7 +536,7 @@ class DispatchNotifier:
         if user is None:
             return
 
-        from deliveries.services import (
+        from notifications.services import (
             NotificationService,
         )
 
