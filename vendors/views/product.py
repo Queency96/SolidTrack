@@ -1,10 +1,16 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+
+from accounts.permissions import IsVendor
 from vendors.models.product import Product
 from vendors.serializers.product import ProductListSerializer
 from vendors.serializers.product import ProductDetailsSerializer
 from vendors.serializers.product import ProductCreateSerializer
 from vendors.serializers.product import ProductUpdateSerializer
+from vendors.views.product_availability import (
+    ProductAvailabilityCheckView,
+    ProductAvailabilityView,
+)
 
 
 class ProductListCreateView(generics.ListCreateAPIView):

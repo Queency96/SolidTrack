@@ -20,6 +20,13 @@ urlpatterns = [
         ),
     ),
 
+    path(
+        "products/",
+        include(
+            "vendors.urls.product"
+        ),
+    ),
+
 ]
 
 

@@ -768,7 +768,20 @@ class CartService:
                 "belong to this product."
             )
 
+        if not variant.product.is_available:
+
+            raise ValueError(
+                "Selected product is not available."
+            )
+
         if not variant.is_available:
+
+            raise ValueError(
+                "Selected product variant "
+                "is not available."
+            )
+
+        if not variant.can_be_purchased:
 
             raise ValueError(
                 "Selected product variant "

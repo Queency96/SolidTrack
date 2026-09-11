@@ -1,14 +1,13 @@
 from rest_framework import serializers
+
+from vendors.models import ProductVariant
 from vendors.models.product import Product
-from vendors.serializers.product_variant import (
-    ProductVariantSerializer,
-)
-from vendors.models.product_variant import ProductVariant
+from vendors.serializers.product_variant import ProductVariantSerializer
 
 
-class ProductSerializer(
-    serializers.ModelSerializer
-):
+class ProductSerializer(serializers.ModelSerializer):
+    """Base product representation with the current model fields."""
+
     variants = ProductVariantSerializer(
         many=True,
         read_only=True,
@@ -16,23 +15,28 @@ class ProductSerializer(
 
     class Meta:
         model = Product
-
         fields = [
             "id",
             "vendor",
+            "store",
             "category",
             "name",
             "slug",
-            "description",
-            "brand",
-            "base_price",
             "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
             "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
             "variants",
             "created_at",
             "updated_at",
         ]
-
         read_only_fields = [
             "id",
             "slug",
@@ -40,7 +44,6 @@ class ProductSerializer(
             "created_at",
             "updated_at",
         ]
-
 
 
 class ProductListSerializer(serializers.ModelSerializer):
@@ -48,38 +51,53 @@ class ProductListSerializer(serializers.ModelSerializer):
         source="category.name",
         read_only=True,
     )
-
     vendor_name = serializers.CharField(
-        source="vendor.business_name",
+        source="vendor.company_name",
         read_only=True,
     )
+    store_name = serializers.CharField(
+        source="store.name",
+        read_only=True,
+    )
+    is_available = serializers.ReadOnlyField()
 
     class Meta:
         model = Product
-
         fields = [
             "id",
-            "name",
-            "slug",
-            "brand",
-            "category",
-            "category_name",
             "vendor",
             "vendor_name",
-            "base_price",
+            "store",
+            "store_name",
+            "category",
+            "category_name",
+            "name",
+            "slug",
             "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
             "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
+            "is_available",
             "created_at",
+            "updated_at",
         ]
-
         read_only_fields = [
             "id",
             "slug",
             "category_name",
             "vendor_name",
+            "store_name",
+            "is_available",
             "created_at",
+            "updated_at",
         ]
-
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
@@ -87,12 +105,14 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         source="category.name",
         read_only=True,
     )
-
     vendor_name = serializers.CharField(
-        source="vendor.business_name",
+        source="vendor.company_name",
         read_only=True,
     )
-
+    store_name = serializers.CharField(
+        source="store.name",
+        read_only=True,
+    )
     variants = ProductVariantSerializer(
         many=True,
         read_only=True,
@@ -100,30 +120,39 @@ class ProductDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-
         fields = [
             "id",
             "vendor",
             "vendor_name",
+            "store",
+            "store_name",
             "category",
             "category_name",
             "name",
             "slug",
-            "description",
-            "brand",
-            "base_price",
             "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
             "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
+            "is_available",
             "variants",
             "created_at",
             "updated_at",
         ]
-
         read_only_fields = [
             "id",
             "slug",
             "vendor_name",
+            "store_name",
             "category_name",
+            "is_available",
             "variants",
             "created_at",
             "updated_at",
@@ -184,10 +213,11 @@ class ProductDetailsSerializer(
             "name",
             "slug",
             "description",
-            "brand",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
             "category",
             "category_name",
-            "base_price",
             "sku",
             "variants",
             "created_at",

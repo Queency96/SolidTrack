@@ -803,6 +803,14 @@ class CheckoutService:
                         "available."
                     )
 
+                if not variant.can_be_purchased:
+
+                    raise ValueError(
+                        f"The selected variant for "
+                        f"{product.name} is no longer "
+                        "available."
+                    )
+
                 if variant.track_inventory:
 
                     if (

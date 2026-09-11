@@ -20,6 +20,6 @@ urlpatterns = [
     path("accounts/", include("accounts.urls")),
     path("wallet/", include("wallet.urls")),
     path("notifications/", include("notifications.urls")),
-    path("", include("vendors.urls.product_category"),
-),
+    path("vendors/", include("vendors.urls")),
+    path("", include("vendors.urls.product_category")),
 ]

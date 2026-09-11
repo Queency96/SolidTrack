@@ -270,7 +270,29 @@ class CartItem(models.Model):
             # Variant availability
             # ------------------------------------------
 
+            if not self.variant.product.is_available:
+
+                raise ValidationError(
+                    {
+                        "product": (
+                            "Product is not "
+                            "available."
+                        )
+                    }
+                )
+
             if not self.variant.is_available:
+
+                raise ValidationError(
+                    {
+                        "variant": (
+                            "The selected variant "
+                            "is not available."
+                        )
+                    }
+                )
+
+            if not self.variant.can_be_purchased:
 
                 raise ValidationError(
                     {

@@ -415,6 +415,89 @@ class Product(models.Model):
     # Availability
     # ==================================================
 
+    def availability_status(self):
+        """
+        Return the product availability result and the
+        individual checks which produced it.
+        """
+
+        store = getattr(
+            self,
+            "store",
+            None,
+        )
+
+        checks = {
+            "is_active": bool(
+                self.is_active
+            ),
+            "is_published": bool(
+                self.is_published
+            ),
+            "is_in_stock": bool(
+                self.is_in_stock
+            ),
+            "store_is_active": bool(
+                getattr(
+                    store,
+                    "is_active",
+                    False,
+                )
+            ),
+            "store_is_verified": bool(
+                getattr(
+                    store,
+                    "is_verified",
+                    False,
+                )
+            ),
+            "store_accepting_orders": bool(
+                getattr(
+                    store,
+                    "accepting_orders",
+                    False,
+                )
+            ),
+        }
+
+        reasons = []
+
+        if not checks["is_active"]:
+            reasons.append(
+                "Product is inactive."
+            )
+
+        if not checks["is_published"]:
+            reasons.append(
+                "Product is not published."
+            )
+
+        if not checks["is_in_stock"]:
+            reasons.append(
+                "Product is out of stock."
+            )
+
+        if not checks["store_is_active"]:
+            reasons.append(
+                "Store is inactive."
+            )
+
+        if not checks["store_is_verified"]:
+            reasons.append(
+                "Store is not verified."
+            )
+
+        if not checks["store_accepting_orders"]:
+            reasons.append(
+                "Store is not accepting orders."
+            )
+
+        return {
+            "is_available": not reasons,
+            "checks": checks,
+            "reasons": reasons,
+        }
+
     @property
     def is_available(self):
         """
@@ -422,11 +505,6 @@ class Product(models.Model):
         be presented as purchasable.
         """
 
-        return (
-            self.is_active
-            and self.is_published
-            and self.store.is_active
-            and self.store.is_verified
-            and self.store.accepting_orders
-            and self.is_in_stock
-        )
+        return self.availability_status()[
+            "is_available"
+        ]

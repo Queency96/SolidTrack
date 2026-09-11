@@ -1,19 +1,35 @@
 from django.urls import path
+
 from vendors.views.product import (
-    ProductListCreateView,
     ProductDetailView,
+    ProductListCreateView,
 )
+from vendors.views.product_availability import ProductAvailabilityView
 
 
 urlpatterns = [
     path(
-        "products/",
+        "",
         ProductListCreateView.as_view(),
         name="product-list-create",
     ),
-
     path(
-        "products/detals/<int:pk>/",
+        "availability/",
+        ProductAvailabilityView.as_view(),
+        name="product-availability",
+    ),
+    path(
+        "availability/<uuid:pk>/",
+        ProductAvailabilityView.as_view(),
+        name="product-availability-detail",
+    ),
+    path(
+        "check/",
+        ProductAvailabilityView.as_view(),
+        name="product-availability-check",
+    ),
+    path(
+        "<uuid:pk>/",
         ProductDetailView.as_view(),
         name="product-detail",
     ),
