@@ -18,14 +18,54 @@ from .models.store import VendorStore
 # Vendor Profile
 # ==================================================
 
+class VendorStoreInline(admin.TabularInline):
+    """
+    Manage a vendor's stores directly from the vendor profile admin.
+    """
+    model = VendorStore
+    extra = 0
+    fields = [
+        "name",
+        "slug",
+        "city",
+        "state",
+        "is_default",
+        "is_active",
+        "is_verified",
+        "accepting_orders",
+    ]
+    show_change_link = True
+
+
 @admin.register(VendorProfile)
 class VendorProfileAdmin(admin.ModelAdmin):
     """
     Admin configuration for vendor profiles.
     """
 
+    list_display = [
+        "company_name",
+        "user",
+        "verification_status",
+        "created_at",
+    ]
+
+    list_filter = [
+        "verification_status",
+    ]
+
     search_fields = [
-        "business_name",
+        "company_name",
+        "user__email",
+    ]
+
+    inlines = [
+        VendorStoreInline,
+    ]
+
+    readonly_fields = [
+        "created_at",
+        "updated_at",
     ]
 
 
@@ -39,9 +79,33 @@ class VendorStoreAdmin(admin.ModelAdmin):
     Admin configuration for vendor stores.
     """
 
+    list_display = [
+        "name",
+        "vendor",
+        "city",
+        "state",
+        "is_default",
+        "is_active",
+        "is_verified",
+        "accepting_orders",
+        "created_at",
+    ]
+
+    list_filter = [
+        "is_active",
+        "is_verified",
+        "is_default",
+        "accepting_orders",
+        "state",
+    ]
+
     search_fields = [
         "name",
-        "address",
+        "slug",
+        "address_line_1",
+        "address_line_2",
+        "city",
+        "state",
     ]
 
 # ==================================================
@@ -268,7 +332,7 @@ class ProductAdmin(admin.ModelAdmin):
         "sku",
         "short_description",
         "description",
-        "vendor__business_name",
+        "vendor__company_name",
         "store__name",
     ]
 
