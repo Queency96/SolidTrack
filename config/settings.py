@@ -32,6 +32,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    "cloudinary_storage",
+    "cloudinary",
+
 
     # Third Party Apps
     "rest_framework",
@@ -174,6 +177,20 @@ USE_TZ = True
 STATIC_URL = 'static/'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+
+# Cloudinary credentials (pushed into process env so pycloudinary / django-cloudinary-storage can read them)
+CLOUDINARY_URL = config("CLOUDINARY_URL", default="")
+os.environ["CLOUDINARY_URL"] = CLOUDINARY_URL
 
 
 SPECTACULAR_SETTINGS = {
