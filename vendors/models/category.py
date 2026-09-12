@@ -72,6 +72,18 @@ class ProductCategory(models.Model):
         default="",
     )
 
+    meta_title = models.CharField(
+        max_length=180,
+        blank=True,
+        default="",
+    )
+
+    meta_description = models.CharField(
+        max_length=320,
+        blank=True,
+        default="",
+    )
+
     # ==================================================
     # Display
     # ==================================================
@@ -111,6 +123,13 @@ class ProductCategory(models.Model):
     # ==================================================
 
     class Meta:
+        
+        constraints = [
+            models.UniqueConstraint(
+                fields=["parent", "name"],
+                name="unique_category_name_per_parent",
+            ),
+        ]
 
         ordering = [
             "sort_order",
