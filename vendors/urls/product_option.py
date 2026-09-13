@@ -31,13 +31,13 @@ urlpatterns = [
     # ==================================================
 
     path(
-        "vendors/option-values/",
+        "option-values/",
         VendorProductOptionValueListCreateView.as_view(),
         name="vendor-product-option-value-list-create",
     ),
 
     path(
-        "vendors/option-values/<int:pk>/",
+        "option-values/<int:pk>/",
         VendorProductOptionValueDetailView.as_view(),
         name="vendor-product-option-value-detail",
     ),

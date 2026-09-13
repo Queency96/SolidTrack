@@ -83,3 +83,5 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
             return ProductUpdateSerializer
 
         return ProductDetailsSerializer
+
+
