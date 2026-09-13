@@ -1,13 +1,13 @@
 from rest_framework import serializers
 
-from .models.models import (
+from .models import (
     Delivery,
     DeliveryAddress,
-    Package,
     DeliveryOffer,
     DeliveryAssignment,
 )
 
+from order.models.package import Package
 from deliveries.constants import DeliveryOfferAction
 
 
@@ -37,7 +37,7 @@ class PackageSerializer(serializers.ModelSerializer):
         model = Package
         exclude = (
             "id",
-            "delivery",
+            "fulfillment",
             "created_at",
             "updated_at",
         )
@@ -249,7 +249,11 @@ class PriceEstimateSerializer(serializers.Serializer):
     )
 
     package_size = serializers.ChoiceField(
-        choices=Package.PackageSize.choices,
+        choices=[
+            "SMALL",
+            "MEDIUM",
+            "LARGE",
+        ],
     )
 
     weight = serializers.DecimalField(

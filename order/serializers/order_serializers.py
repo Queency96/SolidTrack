@@ -335,18 +335,6 @@ class OrderFulfillmentSerializer(
     # Computed Fields
     # ==================================================
 
-    has_rider = serializers.BooleanField(
-        read_only=True,
-    )
-
-    pickup_location = serializers.ReadOnlyField()
-
-    delivery_location = serializers.ReadOnlyField()
-
-    can_dispatch = serializers.BooleanField(
-        read_only=True,
-    )
-
     is_delivered = serializers.BooleanField(
         read_only=True,
     )
@@ -371,14 +359,8 @@ class OrderFulfillmentSerializer(
             "id",
             "order",
             "store",
-            "vendor",
-
-            # ------------------------------------------
-            # Rider / Dispatch
-            # ------------------------------------------
-
-            "rider",
-            "assignment",
+            "store_contact_name",
+            "store_contact_phone",
 
             # ------------------------------------------
             # Status
@@ -401,9 +383,6 @@ class OrderFulfillmentSerializer(
             "store_latitude",
             "store_longitude",
 
-            "store_pickup_instructions",
-            "store_preparation_time_minutes",
-
             # ------------------------------------------
             # Fulfillment Pricing
             # ------------------------------------------
@@ -415,40 +394,19 @@ class OrderFulfillmentSerializer(
             "discount_amount",
             "tax_amount",
             "total_amount",
+            "currency",
 
             # ------------------------------------------
-            # Delivery Destination
+            # Notes
             # ------------------------------------------
 
-            "delivery_address_line_1",
-            "delivery_address_line_2",
-            "delivery_city",
-            "delivery_state",
-            "delivery_country",
-            "delivery_postal_code",
-
-            "delivery_latitude",
-            "delivery_longitude",
-
-            "delivery_instructions",
-
-            # ------------------------------------------
-            # Tracking
-            # ------------------------------------------
-
-            "estimated_delivery_at",
-            "picked_up_at",
-            "delivered_at",
-            "cancelled_at",
+            "vendor_note",
+            "preparation_note",
 
             # ------------------------------------------
             # Computed
             # ------------------------------------------
 
-            "has_rider",
-            "pickup_location",
-            "delivery_location",
-            "can_dispatch",
             "is_delivered",
             "is_cancelled",
 
@@ -458,6 +416,13 @@ class OrderFulfillmentSerializer(
 
             "created_at",
             "updated_at",
+            "processing_at",
+            "packing_at",
+            "ready_for_dispatch_at",
+            "dispatched_at",
+            "delivered_at",
+            "cancelled_at",
+            "out_for_delivery_at",
         ]
 
         read_only_fields = fields

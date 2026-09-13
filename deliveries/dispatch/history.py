@@ -1,4 +1,4 @@
-from deliveries.models.models import (
+from deliveries.models import (
     DispatchHistory,
 )
 

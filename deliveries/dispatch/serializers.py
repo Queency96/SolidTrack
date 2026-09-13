@@ -20,7 +20,7 @@ class DeliveryOfferResponseSerializer(
     """
 
     action = serializers.ChoiceField(
-        choices=DeliveryOfferAction.choices,
+        choices=DeliveryOfferAction.CHOICES,
     )
 
     rejection_reason = serializers.CharField(

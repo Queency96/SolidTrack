@@ -243,17 +243,25 @@ class ProductCreateSerializer(serializers.ModelSerializer):
 
         fields = [
             "id",
+            "store",
             "category",
             "name",
-            "description",
-            "brand",
-            "base_price",
             "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
             "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
         ]
 
         read_only_fields = [
             "id",
+            "slug",
         ]
 
     def validate_sku(self, value):
@@ -285,17 +293,25 @@ class ProductUpdateSerializer(serializers.ModelSerializer):
 
         fields = [
             "id",
+            "store",
             "category",
             "name",
-            "description",
-            "brand",
-            "base_price",
             "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
             "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
         ]
 
         read_only_fields = [
             "id",
+            "slug",
         ]
 
     def validate_sku(self, value):

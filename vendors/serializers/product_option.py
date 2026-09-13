@@ -18,9 +18,7 @@ class ProductOptionValueSerializer(
     Serializer for ProductOptionValue.
     """
 
-    product_id = serializers.ReadOnlyField(
-        source="product_id",
-    )
+    product_id = serializers.ReadOnlyField()
 
     is_available = serializers.ReadOnlyField()
 

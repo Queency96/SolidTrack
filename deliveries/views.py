@@ -10,6 +10,7 @@ from deliveries.dispatch.coordinator import DispatchCoordinator
 from deliveries.dispatch.serializers import (
     DeliveryAssignmentSerializer,
     DeliveryOfferResponseSerializer,
+    DispatchResultSerializer,
 )
 from .serializers import (
     DeliveryBookingSerializer,
