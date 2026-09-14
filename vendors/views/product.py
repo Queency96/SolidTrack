@@ -7,6 +7,7 @@ from vendors.serializers.product import ProductListSerializer
 from vendors.serializers.product import ProductDetailsSerializer
 from vendors.serializers.product import ProductCreateSerializer
 from vendors.serializers.product import ProductUpdateSerializer
+from vendors.serializers.product import ProductDetailSerializer
 from vendors.views.product_availability import (
     ProductAvailabilityCheckView,
     ProductAvailabilityView,
@@ -52,7 +53,7 @@ class ProductListCreateView(generics.ListCreateAPIView):
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     GET:
-        Retrieve a single product.
+        Retrieve a single product with all options and variants.
 
     PATCH/PUT:
         Update a product.
@@ -71,7 +72,12 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
                 "category",
             )
             .prefetch_related(
-                "variants__option_values__option_value__option"
+                "options",
+                "options__values",
+                "variants",
+                "variants__option_values",
+                "variants__option_values__option_value",
+                "variants__option_values__option_value__option",
             )
             .filter(
                 vendor=self.request.user.vendor_profile
@@ -81,6 +87,9 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_serializer_class(self):
         if self.request.method in ["PUT", "PATCH"]:
             return ProductUpdateSerializer
+        
+        if self.request.method == "GET":
+            return ProductDetailSerializer
 
         return ProductDetailsSerializer
 

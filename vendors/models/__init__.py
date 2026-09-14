@@ -9,6 +9,7 @@ from .product_option import ProductOption
 from .product_option_value import ProductOptionValue 
 from .product_variant_image import ProductVariantImage
 from .product_variant_option_value import ProductVariantOptionValue
+from .category_option import CategoryOption
 
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     'ProductVariantOptionValue',
     'ProductOptionValue',
     'ProductVariantImage',
-    'ProductVariantOptionValue'
+    'ProductVariantOptionValue',
+    'CategoryOption',
 ]

@@ -6,11 +6,14 @@ from rest_framework.filters import (
     SearchFilter,
     OrderingFilter,
 )
-from ..models import ProductCategory
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from ..models import ProductCategory, CategoryOption
 from ..serializers.product_category import (
     ProductCategorySerializer,
     PublicProductCategorySerializer,
 )
+from ..serializers.category_option import CategoryOptionSimpleSerializer
 
 
 # ==================================================
@@ -93,6 +96,56 @@ class PublicProductCategoryDetailView(
                 "parent",
             )
         )
+
+
+# ==================================================
+# Category Options API
+# ==================================================
+
+class CategoryOptionsView(APIView):
+    """
+    GET:
+        Return the category options (option templates)
+        for a specific category.
+        
+        This helps vendors know what options they can
+        define when creating products in this category.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, category_slug):
+        try:
+            category = ProductCategory.objects.get(
+                slug=category_slug,
+                is_active=True,
+            )
+        except ProductCategory.DoesNotExist:
+            return Response(
+                {"error": "Category not found."},
+                status=404,
+            )
+
+        # Get all category options (including inherited)
+        category_options = CategoryOption.objects.filter(
+            category=category,
+            is_active=True,
+        ).order_by('sort_order', 'name')
+
+        serializer = CategoryOptionSimpleSerializer(
+            category_options,
+            many=True,
+        )
+
+        return Response({
+            "category": {
+                "id": str(category.id),
+                "name": category.name,
+                "slug": category.slug,
+            },
+            "options": serializer.data,
+            "count": len(serializer.data),
+        })
 
 
 # ==================================================

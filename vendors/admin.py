@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.shortcuts import redirect
+from django.contrib import messages
 
 from .models import (
     Product,
@@ -9,9 +11,11 @@ from .models import (
     ProductVariant,
     ProductVariantImage,
     ProductVariantOptionValue,
+    CategoryOption,
 )
 from .models.vendor_profile import VendorProfile
 from .models.store import VendorStore
+from .services.product_option_service import ProductOptionService
 
 
 # ==================================================
@@ -365,6 +369,47 @@ class ProductAdmin(admin.ModelAdmin):
         "sort_order",
         "-created_at",
     ]
+
+    # ==============================================================
+    # Batch Actions
+    # ==============================================================
+
+    def create_options_from_category(self, request, queryset):
+        """
+        Admin action to create product options from category options.
+        """
+        success_count = 0
+        skip_count = 0
+        
+        for product in queryset:
+            if product.category:
+                # Check if product already has options
+                existing_count = product.options.count()
+                if existing_count > 0:
+                    skip_count += 1
+                    continue
+                    
+                # Create options from category
+                created = ProductOptionService.create_options_from_category(product)
+                if created > 0:
+                    success_count += 1
+        
+        if success_count > 0:
+            self.message_user(
+                request,
+                f"Successfully created options for {success_count} product(s).",
+                messages.SUCCESS,
+            )
+        if skip_count > 0:
+            self.message_user(
+                request,
+                f"Skipped {skip_count} product(s) that already have options.",
+                messages.WARNING,
+            )
+    
+    create_options_from_category.short_description = (
+        "Create options from category options"
+    )
 
     fieldsets = [
         (
@@ -984,3 +1029,47 @@ class ProductVariantOptionValueAdmin(admin.ModelAdmin):
 
 
 
+# ==================================================
+# Category Option
+# ==================================================
+
+@admin.register(CategoryOption)
+class CategoryOptionAdmin(admin.ModelAdmin):
+    """
+    Admin configuration for category options.
+    """
+
+    list_display = [
+        "name",
+        "category",
+        "slug",
+        "sort_order",
+        "is_active",
+        "created_at",
+    ]
+
+    list_filter = [
+        "is_active",
+        "category",
+    ]
+
+    search_fields = [
+        "name",
+        "slug",
+        "category__name",
+    ]
+
+    autocomplete_fields = [
+        "category",
+    ]
+
+    ordering = [
+        "category__sort_order",
+        "sort_order",
+        "name",
+    ]
+
+    readonly_fields = [
+        "created_at",
+        "updated_at",
+    ]

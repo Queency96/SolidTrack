@@ -4,6 +4,7 @@ from ..views.product_category import (
     PublicProductCategoryDetailView,
     AdminProductCategoryListCreateView,
     AdminProductCategoryDetailView,
+    CategoryOptionsView,
 )
 
 
@@ -23,6 +24,12 @@ urlpatterns = [
         "categories/detail/<slug:slug>/",
         PublicProductCategoryDetailView.as_view(),
         name="category-detail",
+    ),
+
+    path(
+        "categories/<slug:category_slug>/options/",
+        CategoryOptionsView.as_view(),
+        name="category-options",
     ),
 
     # ==================================================

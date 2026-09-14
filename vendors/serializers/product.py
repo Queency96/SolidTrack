@@ -1,9 +1,11 @@
 from rest_framework import serializers
 
-from vendors.models import ProductVariant
+from vendors.models import ProductVariant, CategoryOption
 from vendors.models.product import Product
 from vendors.serializers.product_image import ProductImageSerializer
 from vendors.serializers.product_variant import ProductVariantSerializer
+from vendors.serializers.product_option import ProductOptionSerializer
+from vendors.serializers.category_option import CategoryOptionSimpleSerializer
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -45,6 +47,200 @@ class ProductSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+
+class ProductCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating products.
+    
+    Automatically creates ProductOption records from CategoryOption
+    templates when a product is saved.
+    """
+    
+    # Read-only field to show applicable category options
+    applicable_category_options = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "vendor",
+            "store",
+            "category",
+            "name",
+            "slug",
+            "sku",
+            "short_description",
+            "description",
+            "price",
+            "compare_at_price",
+            "stock_quantity",
+            "track_inventory",
+            "is_active",
+            "is_published",
+            "is_featured",
+            "sort_order",
+            "applicable_category_options",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "slug",
+            "applicable_category_options",
+            "created_at",
+            "updated_at",
+        ]
+    
+    def get_applicable_category_options(self, obj):
+        """
+        Return category options applicable to this product's category.
+        This helps vendors know what options they can define for their product.
+        """
+        if not obj.category:
+            return []
+        
+        category_options = CategoryOption.objects.filter(
+            category=obj.category,
+            is_active=True,
+        ).order_by('sort_order', 'name')
+        
+        return CategoryOptionSimpleSerializer(
+            category_options,
+            many=True,
+        ).data
+
+
+class ProductDetailSerializer(serializers.ModelSerializer):
+    """
+    Detailed product representation including options and variants.
+    
+    This serializer handles both:
+    - Simple products (no variants, direct purchase)
+    - Variable products (with variants, options required)
+    """
+    
+    # Product options (templates for variants)
+    options = ProductOptionSerializer(
+        many=True,
+        read_only=True,
+    )
+    
+    # Product variants (if any)
+    variants = ProductVariantSerializer(
+        many=True,
+        read_only=True,
+    )
+    
+    # Category information
+    category_name = serializers.CharField(
+        source="category.name",
+        read_only=True,
+    )
+    
+    category_slug = serializers.CharField(
+        source="category.slug",
+        read_only=True,
+    )
+    
+    # Vendor information
+    vendor_name = serializers.CharField(
+        source="vendor.company_name",
+        read_only=True,
+    )
+    
+    # Store information
+    store_name = serializers.CharField(
+        source="store.name",
+        read_only=True,
+    )
+    
+    store_slug = serializers.CharField(
+        source="store.slug",
+        read_only=True,
+    )
+    
+    # Availability
+    is_in_stock = serializers.ReadOnlyField()
+    is_available = serializers.ReadOnlyField()
+    
+    # Product type indicator
+    has_variants = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Product
+        fields = [
+            # Identity
+            "id",
+            "name",
+            "slug",
+            "sku",
+            
+            # Description
+            "short_description",
+            "description",
+            
+            # Pricing
+            "price",
+            "compare_at_price",
+            
+            # Inventory
+            "stock_quantity",
+            "track_inventory",
+            "is_in_stock",
+            
+            # Category
+            "category",
+            "category_name",
+            "category_slug",
+            
+            # Vendor
+            "vendor",
+            "vendor_name",
+            
+            # Store
+            "store",
+            "store_name",
+            "store_slug",
+            
+            # Options and Variants
+            "options",
+            "variants",
+            "has_variants",
+            
+            # Status
+            "is_active",
+            "is_published",
+            "is_featured",
+            "is_available",
+            
+            # Ordering
+            "sort_order",
+            
+            # Timestamps
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "slug",
+            "options",
+            "variants",
+            "has_variants",
+            "is_in_stock",
+            "is_available",
+            "created_at",
+            "updated_at",
+        ]
+    
+    def get_has_variants(self, obj):
+        """
+        Determine if this product has variants.
+        
+        A product with variants is a 'variable product'.
+        A product without variants is a 'simple product'.
+        """
+        return obj.variants.exists()
 
 
 class ProductListSerializer(serializers.ModelSerializer):
