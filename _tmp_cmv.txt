@@ -1,0 +1,1040 @@
+   1 import random
+   2 from decimal import Decimal
+   3 from django.contrib.auth import get_user_model
+   4 from django.core.management.base import BaseCommand
+   5 from django.db import transaction
+   6 from django.utils.text import slugify
+   7 from vendors.models import VendorProfile, VendorStore
+   8 
+   9 
+  10 User = get_user_model()
+  11 
+  12 
+  13 class Command(BaseCommand):
+  14     """
+  15     Create mock vendor accounts and vendor stores.
+  16 
+  17     Each vendor gets 5 stores by default.
+  18 
+  19     IMPORTANT:
+  20         Each store belonging to the same vendor is created
+  21         in a different location.
+  22 
+  23     Example:
+  24 
+  25         Vendor 1
+  26         ├── Store 1 → Lagos
+  27         ├── Store 2 → Abuja
+  28         ├── Store 3 → Port Harcourt
+  29         ├── Store 4 → Ibadan
+  30         └── Store 5 → Enugu
+  31 
+  32     Commands:
+  33 
+  34         python manage.py create_mock_vendors
+  35 
+  36         python manage.py create_mock_vendors --vendor-count 20
+  37 
+  38         python manage.py create_mock_vendors --stores-per-vendor 5
+  39 
+  40         python manage.py create_mock_vendors --overwrite
+  41     """
+  42 
+  43     help = "Create mock vendors with 5 stores in different locations."
+  44 
+  45     # ==========================================================
+  46     # LOCATIONS
+  47     # ==========================================================
+  48 
+  49     LOCATIONS = [
+  50         {
+  51             "city": "Lagos",
+  52             "state": "Lagos",
+  53             "latitude": Decimal("6.5244000"),
+  54             "longitude": Decimal("3.3792000"),
+  55             "postal_code": "100001",
+  56         },
+  57         {
+  58             "city": "Ikeja",
+  59             "state": "Lagos",
+  60             "latitude": Decimal("6.6018000"),
+  61             "longitude": Decimal("3.3515000"),
+  62             "postal_code": "100212",
+  63         },
+  64         {
+  65             "city": "Lekki",
+  66             "state": "Lagos",
+  67             "latitude": Decimal("6.4698000"),
+  68             "longitude": Decimal("3.5852000"),
+  69             "postal_code": "105102",
+  70         },
+  71         {
+  72             "city": "Victoria Island",
+  73             "state": "Lagos",
+  74             "latitude": Decimal("6.4281000"),
+  75             "longitude": Decimal("3.4219000"),
+  76             "postal_code": "101241",
+  77         },
+  78         {
+  79             "city": "Yaba",
+  80             "state": "Lagos",
+  81             "latitude": Decimal("6.5158000"),
+  82             "longitude": Decimal("3.3898000"),
+  83             "postal_code": "101212",
+  84         },
+  85         {
+  86             "city": "Surulere",
+  87             "state": "Lagos",
+  88             "latitude": Decimal("6.4969000"),
+  89             "longitude": Decimal("3.3596000"),
+  90             "postal_code": "101283",
+  91         },
+  92         {
+  93             "city": "Abuja",
+  94             "state": "FCT",
+  95             "latitude": Decimal("9.0765000"),
+  96             "longitude": Decimal("7.3986000"),
+  97             "postal_code": "900001",
+  98         },
+  99         {
+ 100             "city": "Port Harcourt",
+ 101             "state": "Rivers",
+ 102             "latitude": Decimal("4.8156000"),
+ 103             "longitude": Decimal("7.0498000"),
+ 104             "postal_code": "500001",
+ 105         },
+ 106         {
+ 107             "city": "Benin City",
+ 108             "state": "Edo",
+ 109             "latitude": Decimal("6.3350000"),
+ 110             "longitude": Decimal("5.6037000"),
+ 111             "postal_code": "300001",
+ 112         },
+ 113         {
+ 114             "city": "Ibadan",
+ 115             "state": "Oyo",
+ 116             "latitude": Decimal("7.3775000"),
+ 117             "longitude": Decimal("3.9470000"),
+ 118             "postal_code": "200001",
+ 119         },
+ 120         {
+ 121             "city": "Kano",
+ 122             "state": "Kano",
+ 123             "latitude": Decimal("12.0022000"),
+ 124             "longitude": Decimal("8.5920000"),
+ 125             "postal_code": "700001",
+ 126         },
+ 127         {
+ 128             "city": "Enugu",
+ 129             "state": "Enugu",
+ 130             "latitude": Decimal("6.4584000"),
+ 131             "longitude": Decimal("7.5464000"),
+ 132             "postal_code": "400001",
+ 133         },
+ 134         {
+ 135             "city": "Asaba",
+ 136             "state": "Delta",
+ 137             "latitude": Decimal("6.1944000"),
+ 138             "longitude": Decimal("6.7316000"),
+ 139             "postal_code": "320001",
+ 140         },
+ 141         {
+ 142             "city": "Warri",
+ 143             "state": "Delta",
+ 144             "latitude": Decimal("5.5167000"),
+ 145             "longitude": Decimal("5.7500000"),
+ 146             "postal_code": "332001",
+ 147         },
+ 148         {
+ 149             "city": "Abeokuta",
+ 150             "state": "Ogun",
+ 151             "latitude": Decimal("7.1475000"),
+ 152             "longitude": Decimal("3.3619000"),
+ 153             "postal_code": "110001",
+ 154         },
+ 155         {
+ 156             "city": "Ilorin",
+ 157             "state": "Kwara",
+ 158             "latitude": Decimal("8.4966000"),
+ 159             "longitude": Decimal("4.5421000"),
+ 160             "postal_code": "240001",
+ 161         },
+ 162         {
+ 163             "city": "Akure",
+ 164             "state": "Ondo",
+ 165             "latitude": Decimal("7.2571000"),
+ 166             "longitude": Decimal("5.2058000"),
+ 167             "postal_code": "340001",
+ 168         },
+ 169         {
+ 170             "city": "Jos",
+ 171             "state": "Plateau",
+ 172             "latitude": Decimal("9.8965000"),
+ 173             "longitude": Decimal("8.8583000"),
+ 174             "postal_code": "930001",
+ 175         },
+ 176         {
+ 177             "city": "Kaduna",
+ 178             "state": "Kaduna",
+ 179             "latitude": Decimal("10.5105000"),
+ 180             "longitude": Decimal("7.4165000"),
+ 181             "postal_code": "800001",
+ 182         },
+ 183         {
+ 184             "city": "Calabar",
+ 185             "state": "Cross River",
+ 186             "latitude": Decimal("4.9757000"),
+ 187             "longitude": Decimal("8.3417000"),
+ 188             "postal_code": "540001",
+ 189         },
+ 190     ]
+ 191 
+ 192     # ==========================================================
+ 193     # COMPANY DATA
+ 194     # ==========================================================
+ 195 
+ 196     COMPANY_PREFIXES = [
+ 197         "Prime",
+ 198         "Royal",
+ 199         "Global",
+ 200         "Smart",
+ 201         "Elite",
+ 202         "Metro",
+ 203         "Green",
+ 204         "Swift",
+ 205         "Urban",
+ 206         "Golden",
+ 207         "Capital",
+ 208         "First",
+ 209         "Trusted",
+ 210         "Mega",
+ 211         "Reliable",
+ 212     ]
+ 213 
+ 214     COMPANY_TYPES = [
+ 215         "Distributors",
+ 216         "Supplies",
+ 217         "Enterprises",
+ 218         "Trading",
+ 219         "Merchants",
+ 220         "Wholesale",
+ 221         "Ventures",
+ 222         "Commerce",
+ 223         "Stores",
+ 224         "Logistics",
+ 225     ]
+ 226 
+ 227     STREET_NAMES = [
+ 228         "Commerce",
+ 229         "Market",
+ 230         "Industrial",
+ 231         "Business",
+ 232         "Warehouse",
+ 233         "Trade",
+ 234         "Unity",
+ 235         "Airport",
+ 236         "Station",
+ 237         "Central",
+ 238     ]
+ 239 
+ 240     NIGERIAN_PHONE_PREFIXES = [
+ 241         "0803",
+ 242         "0805",
+ 243         "0806",
+ 244         "0807",
+ 245         "0809",
+ 246         "0810",
+ 247         "0811",
+ 248         "0812",
+ 249         "0813",
+ 250         "0814",
+ 251         "0815",
+ 252         "0816",
+ 253         "0817",
+ 254         "0818",
+ 255         "0819",
+ 256         "0901",
+ 257         "0902",
+ 258         "0903",
+ 259         "0904",
+ 260         "0905",
+ 261         "0906",
+ 262         "0907",
+ 263         "0908",
+ 264         "0909",
+ 265         "0910",
+ 266         "0911",
+ 267         "0912",
+ 268         "0913",
+ 269         "0914",
+ 270         "0915",
+ 271         "0916",
+ 272         "0917",
+ 273         "0918",
+ 274         "0919",
+ 275     ]
+ 276 
+ 277     # ==========================================================
+ 278     # COMMAND ARGUMENTS
+ 279     # ==========================================================
+ 280 
+ 281     def add_arguments(self, parser):
+ 282 
+ 283         parser.add_argument(
+ 284             "--vendor-count",
+ 285             type=int,
+ 286             default=10,
+ 287             help="Number of vendors to create. Default: 10.",
+ 288         )
+ 289 
+ 290         parser.add_argument(
+ 291             "--stores-per-vendor",
+ 292             type=int,
+ 293             default=5,
+ 294             help="Number of stores per vendor. Default: 5.",
+ 295         )
+ 296 
+ 297         parser.add_argument(
+ 298             "--overwrite",
+ 299             action="store_true",
+ 300             help=(
+ 301                 "Delete previously generated mock vendors "
+ 302                 "before creating new ones."
+ 303             ),
+ 304         )
+ 305 
+ 306     # ==========================================================
+ 307     # HANDLE
+ 308     # ==========================================================
+ 309 
+ 310     def handle(self, *args, **options):
+ 311 
+ 312         vendor_count = options["vendor_count"]
+ 313         stores_per_vendor = options["stores_per_vendor"]
+ 314         overwrite = options["overwrite"]
+ 315 
+ 316         if vendor_count < 1:
+ 317 
+ 318             self.stdout.write(
+ 319                 self.style.ERROR(
+ 320                     "vendor-count must be at least 1."
+ 321                 )
+ 322             )
+ 323 
+ 324             return
+ 325 
+ 326         if stores_per_vendor < 1:
+ 327 
+ 328             self.stdout.write(
+ 329                 self.style.ERROR(
+ 330                     "stores-per-vendor must be at least 1."
+ 331                 )
+ 332             )
+ 333 
+ 334             return
+ 335 
+ 336         # ------------------------------------------------------
+ 337         # We need enough different locations.
+ 338         # ------------------------------------------------------
+ 339 
+ 340         if stores_per_vendor > len(self.LOCATIONS):
+ 341 
+ 342             self.stdout.write(
+ 343                 self.style.ERROR(
+ 344                     f"You requested {stores_per_vendor} stores "
+ 345                     f"per vendor, but only "
+ 346                     f"{len(self.LOCATIONS)} different locations "
+ 347                     f"are configured."
+ 348                 )
+ 349             )
+ 350 
+ 351             return
+ 352 
+ 353         # ------------------------------------------------------
+ 354         # Overwrite
+ 355         # ------------------------------------------------------
+ 356 
+ 357         if overwrite:
+ 358 
+ 359             self.stdout.write(
+ 360                 self.style.WARNING(
+ 361                     "Deleting previously generated "
+ 362                     "mock vendors..."
+ 363                 )
+ 364             )
+ 365 
+ 366             self._delete_existing_vendors()
+ 367 
+ 368             self.stdout.write("")
+ 369 
+ 370         # ------------------------------------------------------
+ 371         # Header
+ 372         # ------------------------------------------------------
+ 373 
+ 374         self.stdout.write(
+ 375             self.style.SUCCESS(
+ 376                 f"Creating {vendor_count} mock vendor(s)..."
+ 377             )
+ 378         )
+ 379 
+ 380         self.stdout.write(
+ 381             f"Each vendor will have "
+ 382             f"{stores_per_vendor} stores."
+ 383         )
+ 384 
+ 385         self.stdout.write(
+ 386             "Each vendor's stores will be in "
+ 387             "different locations."
+ 388         )
+ 389 
+ 390         self.stdout.write("")
+ 391 
+ 392         vendors_created = 0
+ 393         vendors_skipped = 0
+ 394         stores_created = 0
+ 395 
+ 396         # ======================================================
+ 397         # CREATE VENDORS
+ 398         # ======================================================
+ 399 
+ 400         for vendor_number in range(
+ 401             1,
+ 402             vendor_count + 1,
+ 403         ):
+ 404 
+ 405             try:
+ 406 
+ 407                 with transaction.atomic():
+ 408 
+ 409                     # ------------------------------------------
+ 410                     # User
+ 411                     # ------------------------------------------
+ 412 
+ 413                     email = (
+ 414                         self._generate_unique_vendor_email(
+ 415                             vendor_number
+ 416                         )
+ 417                     )
+ 418 
+ 419                     phone_number = (
+ 420                         self._generate_unique_phone()
+ 421                     )
+ 422 
+ 423                     company_name = (
+ 424                         self._generate_unique_company_name()
+ 425                     )
+ 426 
+ 427                     user = User.objects.create_user(
+ 428                         email=email,
+ 429                         phone_number=phone_number,
+ 430                         password="password123",
+ 431                         first_name=f"Vendor{vendor_number}",
+ 432                         last_name="Admin",
+ 433                     )
+ 434 
+ 435                     # ------------------------------------------
+ 436                     # Vendor profile
+ 437                     # ------------------------------------------
+ 438 
+ 439                     vendor_profile = (
+ 440                         VendorProfile.objects.create(
+ 441                             user=user,
+ 442                             company_name=company_name,
+ 443                             business_registration_number=(
+ 444                                 self._generate_business_number()
+ 445                             ),
+ 446                             tax_number=(
+ 447                                 self._generate_tax_number()
+ 448                             ),
+ 449                             verification_status=(
+ 450                                 VendorProfile
+ 451                                 .VerificationStatus
+ 452                                 .APPROVED
+ 453                             ),
+ 454                         )
+ 455                     )
+ 456 
+ 457                     # ------------------------------------------
+ 458                     # FIVE DIFFERENT LOCATIONS
+ 459                     # ------------------------------------------
+ 460 
+ 461                     locations = (
+ 462                         self._get_unique_locations(
+ 463                             stores_per_vendor
+ 464                         )
+ 465                     )
+ 466 
+ 467                     # ------------------------------------------
+ 468                     # Stores
+ 469                     # ------------------------------------------
+ 470 
+ 471                     vendor_stores = []
+ 472 
+ 473                     for store_number, location in enumerate(
+ 474                         locations,
+ 475                         start=1,
+ 476                     ):
+ 477 
+ 478                         store = (
+ 479                             self._create_store(
+ 480                                 vendor_profile=vendor_profile,
+ 481                                 company_name=company_name,
+ 482                                 store_number=store_number,
+ 483                                 location=location,
+ 484                                 total_stores=stores_per_vendor,
+ 485                             )
+ 486                         )
+ 487 
+ 488                         vendor_stores.append(store)
+ 489 
+ 490                     # ------------------------------------------
+ 491                     # Counters
+ 492                     # ------------------------------------------
+ 493 
+ 494                     vendors_created += 1
+ 495 
+ 496                     stores_created += len(
+ 497                         vendor_stores
+ 498                     )
+ 499 
+ 500                     # ------------------------------------------
+ 501                     # Output
+ 502                     # ------------------------------------------
+ 503 
+ 504                     self.stdout.write(
+ 505                         self.style.SUCCESS(
+ 506                             f"✓ Vendor {vendor_number} created"
+ 507                         )
+ 508                     )
+ 509 
+ 510                     self.stdout.write(
+ 511                         f"  Company: {company_name}"
+ 512                     )
+ 513 
+ 514                     self.stdout.write(
+ 515                         f"  Email:   {email}"
+ 516                     )
+ 517 
+ 518                     self.stdout.write(
+ 519                         f"  Phone:   {phone_number}"
+ 520                     )
+ 521 
+ 522                     self.stdout.write(
+ 523                         f"  Stores:  "
+ 524                         f"{len(vendor_stores)}"
+ 525                     )
+ 526 
+ 527                     for store in vendor_stores:
+ 528 
+ 529                         self.stdout.write(
+ 530                             f"    • {store.name}"
+ 531                         )
+ 532 
+ 533                         self.stdout.write(
+ 534                             f"      Location: "
+ 535                             f"{store.city}, "
+ 536                             f"{store.state}"
+ 537                         )
+ 538 
+ 539                         self.stdout.write(
+ 540                             f"      GPS: "
+ 541                             f"{store.latitude}, "
+ 542                             f"{store.longitude}"
+ 543                         )
+ 544 
+ 545                     self.stdout.write("")
+ 546 
+ 547             except Exception as exc:
+ 548 
+ 549                 vendors_skipped += 1
+ 550 
+ 551                 self.stdout.write(
+ 552                     self.style.ERROR(
+ 553                         f"Failed to create Vendor "
+ 554                         f"{vendor_number}: {exc}"
+ 555                     )
+ 556                 )
+ 557 
+ 558         # ======================================================
+ 559         # SUMMARY
+ 560         # ======================================================
+ 561 
+ 562         self.stdout.write("")
+ 563         self.stdout.write("=" * 60)
+ 564         self.stdout.write("SUMMARY")
+ 565         self.stdout.write("=" * 60)
+ 566 
+ 567         self.stdout.write(
+ 568             f"Vendors created: {vendors_created}"
+ 569         )
+ 570 
+ 571         self.stdout.write(
+ 572             f"Vendors skipped: {vendors_skipped}"
+ 573         )
+ 574 
+ 575         self.stdout.write(
+ 576             f"Stores created:  {stores_created}"
+ 577         )
+ 578 
+ 579         # ======================================================
+ 580         # LOGIN
+ 581         # ======================================================
+ 582 
+ 583         self.stdout.write("")
+ 584         self.stdout.write("=" * 60)
+ 585         self.stdout.write("LOGIN CREDENTIALS")
+ 586         self.stdout.write("=" * 60)
+ 587 
+ 588         self.stdout.write(
+ 589             "Email:    vendor1@soliddistributor.com"
+ 590         )
+ 591 
+ 592         self.stdout.write(
+ 593             "Password: password123"
+ 594         )
+ 595 
+ 596         self.stdout.write("")
+ 597 
+ 598     # ==========================================================
+ 599     # GET UNIQUE LOCATIONS
+ 600     # ==========================================================
+ 601 
+ 602     def _get_unique_locations(
+ 603         self,
+ 604         number_of_stores,
+ 605     ):
+ 606         """
+ 607         Select distinct locations for ONE vendor.
+ 608 
+ 609         Example for 5 stores:
+ 610 
+ 611             Lagos
+ 612             Abuja
+ 613             Port Harcourt
+ 614             Ibadan
+ 615             Enugu
+ 616 
+ 617         The locations are sampled without replacement,
+ 618         therefore the same vendor can never receive two
+ 619         stores in the same configured location.
+ 620         """
+ 621 
+ 622         return random.sample(
+ 623             self.LOCATIONS,
+ 624             number_of_stores,
+ 625         )
+ 626 
+ 627     # ==========================================================
+ 628     # CREATE STORE
+ 629     # ==========================================================
+ 630 
+ 631     def _create_store(
+ 632         self,
+ 633         vendor_profile,
+ 634         company_name,
+ 635         store_number,
+ 636         location,
+ 637         total_stores,
+ 638     ):
+ 639 
+ 640         # ------------------------------------------------------
+ 641         # Store name
+ 642         # ------------------------------------------------------
+ 643 
+ 644         store_name = (
+ 645             self._generate_store_name(
+ 646                 company_name=company_name,
+ 647                 location=location,
+ 648                 store_number=store_number,
+ 649                 total_stores=total_stores,
+ 650             )
+ 651         )
+ 652 
+ 653         # ------------------------------------------------------
+ 654         # Slug
+ 655         # ------------------------------------------------------
+ 656 
+ 657         slug = (
+ 658             self._generate_unique_store_slug(
+ 659                 vendor=vendor_profile,
+ 660                 store_name=store_name,
+ 661             )
+ 662         )
+ 663 
+ 664         # ------------------------------------------------------
+ 665         # Coordinates
+ 666         # ------------------------------------------------------
+ 667 
+ 668         latitude, longitude = (
+ 669             self._randomize_coordinates(
+ 670                 location["latitude"],
+ 671                 location["longitude"],
+ 672             )
+ 673         )
+ 674 
+ 675         # ------------------------------------------------------
+ 676         # Address
+ 677         # ------------------------------------------------------
+ 678 
+ 679         house_number = random.randint(
+ 680             1,
+ 681             150,
+ 682         )
+ 683 
+ 684         street = random.choice(
+ 685             self.STREET_NAMES
+ 686         )
+ 687 
+ 688         address_line_1 = (
+ 689             f"{house_number} "
+ 690             f"{street} Street"
+ 691         )
+ 692 
+ 693         # ------------------------------------------------------
+ 694         # Phone
+ 695         # ------------------------------------------------------
+ 696 
+ 697         phone = (
+ 698             self._generate_unique_phone()
+ 699         )
+ 700 
+ 701         # ------------------------------------------------------
+ 702         # Email
+ 703         # ------------------------------------------------------
+ 704 
+ 705         email = (
+ 706             f"{slug}@soliddistributor.com"
+ 707         )
+ 708 
+ 709         # ------------------------------------------------------
+ 710         # Create store
+ 711         # ------------------------------------------------------
+ 712 
+ 713         return VendorStore.objects.create(
+ 714 
+ 715             vendor=vendor_profile,
+ 716 
+ 717             name=store_name,
+ 718 
+ 719             slug=slug,
+ 720 
+ 721             description=(
+ 722                 f"{store_name} is a branch of "
+ 723                 f"{company_name}, serving customers "
+ 724                 f"and preparing orders for delivery."
+ 725             ),
+ 726 
+ 727             phone=phone,
+ 728 
+ 729             email=email,
+ 730 
+ 731             address_line_1=address_line_1,
+ 732 
+ 733             address_line_2="",
+ 734 
+ 735             city=location["city"],
+ 736 
+ 737             state=location["state"],
+ 738 
+ 739             country="Nigeria",
+ 740 
+ 741             postal_code=location["postal_code"],
+ 742 
+ 743             latitude=latitude,
+ 744 
+ 745             longitude=longitude,
+ 746 
+ 747             is_active=True,
+ 748 
+ 749             is_verified=True,
+ 750 
+ 751             accepting_orders=True,
+ 752 
+ 753             accepting_pickups=True,
+ 754 
+ 755             pickup_instructions=(
+ 756                 "Rider should report to the store "
+ 757                 "pickup desk and present the delivery "
+ 758                 "assignment before collecting the package."
+ 759             ),
+ 760 
+ 761             preparation_time_minutes=random.choice(
+ 762                 [
+ 763                     15,
+ 764                     20,
+ 765                     30,
+ 766                     45,
+ 767                     60,
+ 768                 ]
+ 769             ),
+ 770 
+ 771             # Only the first store is default.
+ 772             is_default=(
+ 773                 store_number == 1
+ 774             ),
+ 775         )
+ 776 
+ 777     # ==========================================================
+ 778     # STORE NAME
+ 779     # ==========================================================
+ 780 
+ 781     def _generate_store_name(
+ 782         self,
+ 783         company_name,
+ 784         location,
+ 785         store_number,
+ 786         total_stores,
+ 787     ):
+ 788 
+ 789         return (
+ 790             f"{company_name} - "
+ 791             f"{location['city']} Branch"
+ 792         )
+ 793 
+ 794     # ==========================================================
+ 795     # COMPANY NAME
+ 796     # ==========================================================
+ 797 
+ 798     def _generate_unique_company_name(self):
+ 799 
+ 800         max_attempts = 100
+ 801 
+ 802         for _ in range(max_attempts):
+ 803 
+ 804             company_name = (
+ 805                 f"{random.choice(self.COMPANY_PREFIXES)} "
+ 806                 f"{random.choice(self.COMPANY_TYPES)}"
+ 807             )
+ 808 
+ 809             if not VendorProfile.objects.filter(
+ 810                 company_name=company_name
+ 811             ).exists():
+ 812 
+ 813                 return company_name
+ 814 
+ 815         return (
+ 816             "Solid Distributor "
+ 817             f"{random.randint(10000, 99999)}"
+ 818         )
+ 819 
+ 820     # ==========================================================
+ 821     # EMAIL
+ 822     # ==========================================================
+ 823 
+ 824     def _generate_unique_vendor_email(
+ 825         self,
+ 826         vendor_number,
+ 827     ):
+ 828 
+ 829         base_email = (
+ 830             f"vendor{vendor_number}"
+ 831             "@soliddistributor.com"
+ 832         )
+ 833 
+ 834         if not User.objects.filter(
+ 835             email=base_email
+ 836         ).exists():
+ 837 
+ 838             return base_email
+ 839 
+ 840         counter = 2
+ 841 
+ 842         while True:
+ 843 
+ 844             email = (
+ 845                 f"vendor{vendor_number}_{counter}"
+ 846                 "@soliddistributor.com"
+ 847             )
+ 848 
+ 849             if not User.objects.filter(
+ 850                 email=email
+ 851             ).exists():
+ 852 
+ 853                 return email
+ 854 
+ 855             counter += 1
+ 856 
+ 857     # ==========================================================
+ 858     # PHONE
+ 859     # ==========================================================
+ 860 
+ 861     def _generate_unique_phone(self):
+ 862 
+ 863         max_attempts = 1000
+ 864 
+ 865         for _ in range(max_attempts):
+ 866 
+ 867             prefix = random.choice(
+ 868                 self.NIGERIAN_PHONE_PREFIXES
+ 869             )
+ 870 
+ 871             subscriber_number = "".join(
+ 872                 str(random.randint(0, 9))
+ 873                 for _ in range(7)
+ 874             )
+ 875 
+ 876             phone = (
+ 877                 f"{prefix}{subscriber_number}"
+ 878             )
+ 879 
+ 880             # User.phone_number is unique.
+ 881             if User.objects.filter(
+ 882                 phone_number=phone
+ 883             ).exists():
+ 884 
+ 885                 continue
+ 886 
+ 887             return phone
+ 888 
+ 889         raise RuntimeError(
+ 890             "Unable to generate a unique "
+ 891             "Nigerian phone number."
+ 892         )
+ 893 
+ 894     # ==========================================================
+ 895     # STORE SLUG
+ 896     # ==========================================================
+ 897 
+ 898     def _generate_unique_store_slug(
+ 899         self,
+ 900         vendor,
+ 901         store_name,
+ 902     ):
+ 903 
+ 904         base_slug = slugify(
+ 905             store_name
+ 906         )
+ 907 
+ 908         slug = base_slug
+ 909         counter = 2
+ 910 
+ 911         while VendorStore.objects.filter(
+ 912             vendor=vendor,
+ 913             slug=slug,
+ 914         ).exists():
+ 915 
+ 916             slug = (
+ 917                 f"{base_slug}-{counter}"
+ 918             )
+ 919 
+ 920             counter += 1
+ 921 
+ 922         return slug
+ 923 
+ 924     # ==========================================================
+ 925     # BUSINESS REGISTRATION
+ 926     # ==========================================================
+ 927 
+ 928     def _generate_business_number(self):
+ 929 
+ 930         return (
+ 931             f"RC"
+ 932             f"{random.randint(1000000, 9999999)}"
+ 933         )
+ 934 
+ 935     # ==========================================================
+ 936     # TAX NUMBER
+ 937     # ==========================================================
+ 938 
+ 939     def _generate_tax_number(self):
+ 940 
+ 941         return (
+ 942             f"NG-TIN-"
+ 943             f"{random.randint(100000000, 999999999)}"
+ 944         )
+ 945 
+ 946     # ==========================================================
+ 947     # COORDINATES
+ 948     # ==========================================================
+ 949 
+ 950     def _randomize_coordinates(
+ 951         self,
+ 952         latitude,
+ 953         longitude,
+ 954     ):
+ 955         """
+ 956         Add a small coordinate variation around the
+ 957         configured location.
+ 958 
+ 959         This means two different vendors can have
+ 960         stores in the same city while still having
+ 961         slightly different GPS pickup points.
+ 962 
+ 963         However, stores belonging to the SAME vendor
+ 964         are always assigned different base locations.
+ 965         """
+ 966 
+ 967         latitude_offset = Decimal(
+ 968             str(
+ 969                 round(
+ 970                     random.uniform(
+ 971                         -0.015,
+ 972                         0.015,
+ 973                     ),
+ 974                     7,
+ 975                 )
+ 976             )
+ 977         )
+ 978 
+ 979         longitude_offset = Decimal(
+ 980             str(
+ 981                 round(
+ 982                     random.uniform(
+ 983                         -0.015,
+ 984                         0.015,
+ 985                     ),
+ 986                     7,
+ 987                 )
+ 988             )
+ 989         )
+ 990 
+ 991         latitude = (
+ 992             latitude + latitude_offset
+ 993         )
+ 994 
+ 995         longitude = (
+ 996             longitude + longitude_offset
+ 997         )
+ 998 
+ 999         latitude = max(
+1000             Decimal("-90"),
+1001             min(
+1002                 Decimal("90"),
+1003                 latitude,
+1004             ),
+1005         )
+1006 
+1007         longitude = max(
+1008             Decimal("-180"),
+1009             min(
+1010                 Decimal("180"),
+1011                 longitude,
+1012             ),
+1013         )
+1014 
+1015         return (
+1016             latitude,
+1017             longitude,
+1018         )
+1019 
+1020     # ==========================================================
+1021     # DELETE EXISTING MOCK VENDORS
+1022     # ==========================================================
+1023 
+1024     def _delete_existing_vendors(self):
+1025 
+1026         mock_users = User.objects.filter(
+1027             email__iendswith="@soliddistributor.com"
+1028         )
+1029 
+1030         count = mock_users.count()
+1031 
+1032         if count:
+1033             mock_users.delete()
+1034 
+1035         self.stdout.write(
+1036             self.style.SUCCESS(
+1037                 f"Deleted {count} existing mock "
+1038                 f"vendor user(s)."
+1039             )
+1040         )
