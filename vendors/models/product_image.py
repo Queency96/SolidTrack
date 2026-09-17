@@ -189,6 +189,7 @@ class ProductImage(models.Model):
     # ==================================================
     # Primary Image Helper
     # ==================================================
+    @transaction.atomic
     def make_primary(self):
         """
         Make this image the primary image for its product.
@@ -197,24 +198,27 @@ class ProductImage(models.Model):
         is automatically demoted.
         """
 
-        with transaction.atomic():
-
-            ProductImage.objects.filter(
-                product=self.product,
+        (
+            ProductImage.objects
+            .filter(
+                product_id=self.product_id,
                 is_primary=True,
-            ).exclude(
+            )
+            .exclude(
                 pk=self.pk,
-            ).update(
+            )
+            .update(
                 is_primary=False,
             )
+        )
 
+        if not self.is_primary:
             self.is_primary = True
-
             self.save(
                 update_fields=[
                     "is_primary",
                     "updated_at",
-                ],
+                ]
             )
 
         return self

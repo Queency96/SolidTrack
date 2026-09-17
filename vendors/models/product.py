@@ -508,3 +508,5 @@ class Product(models.Model):
         return self.availability_status()[
             "is_available"
         ]
+    
+    

@@ -1,34 +1,195 @@
-from django.db.models import Q
-from rest_framework.permissions import AllowAny
+from django.db.models import Count, Exists, OuterRef, Q
 from rest_framework import generics
-from rest_framework.permissions import IsAdminUser
-from rest_framework.filters import (
-    SearchFilter,
-    OrderingFilter,
-)
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..models import ProductCategory, CategoryOption
+
+from ..models import CategoryOption, ProductCategory
+from ..serializers.category_option import CategoryOptionSimpleSerializer
 from ..serializers.product_category import (
     ProductCategorySerializer,
     PublicProductCategorySerializer,
 )
-from ..serializers.category_option import CategoryOptionSimpleSerializer
 
 
-# ==================================================
-# Public Category List
-# ==================================================
+# ==========================================================
+# Category Querysets
+# ==========================================================
 
-class PublicProductCategoryListView(
-    generics.ListAPIView,
-):
+def get_category_queryset():
     """
-    Return active product categories available
-    to marketplace customers.
+    Base ProductCategory queryset used by admin/category APIs.
+
+    Database calculates:
+
+        - product_count
+        - active_product_count
+        - has_children
+
+    The parent category is loaded with select_related().
+
+    Annotation names intentionally differ from model properties.
+    """
+
+    children_queryset = ProductCategory.objects.filter(
+        parent_id=OuterRef("pk"),
+    )
+
+    return (
+        ProductCategory.objects
+        .select_related("parent")
+        .annotate(
+            _annotated_product_count=Count(
+                "products",
+                distinct=True,
+            ),
+            _annotated_active_product_count=Count(
+                "products",
+                filter=Q(
+                    products__is_active=True,
+                    products__is_published=True,
+                ),
+                distinct=True,
+            ),
+            _annotated_has_children=Exists(
+                children_queryset,
+            ),
+        )
+        .order_by(
+            "sort_order",
+            "name",
+        )
+    )
+
+
+def get_public_category_queryset():
+    """
+    Optimized queryset for public category endpoints.
+
+    Only active categories are exposed.
+
+    Product counts represent products that are:
+
+        - active
+        - published
+    """
+
+    children_queryset = ProductCategory.objects.filter(
+        parent_id=OuterRef("pk"),
+        is_active=True,
+    )
+
+    return (
+        ProductCategory.objects
+        .filter(
+            is_active=True,
+        )
+        .select_related("parent")
+        .annotate(
+            _annotated_product_count=Count(
+                "products",
+                filter=Q(
+                    products__is_active=True,
+                    products__is_published=True,
+                ),
+                distinct=True,
+            ),
+            _annotated_active_product_count=Count(
+                "products",
+                filter=Q(
+                    products__is_active=True,
+                    products__is_published=True,
+                ),
+                distinct=True,
+            ),
+            _annotated_has_children=Exists(
+                children_queryset,
+            ),
+        )
+        .order_by(
+            "sort_order",
+            "name",
+        )
+    )
+
+
+# ==========================================================
+# Root Category Resolution
+# ==========================================================
+
+def attach_root_category_ids(categories):
+    """
+    Attach root category IDs to an already-materialized category
+    collection.
+
+    The function performs no database queries.
+
+    It follows the parent relationships that were loaded by
+    select_related("parent") and resolves the root in memory.
+
+    If the complete hierarchy is not present in the supplied
+    collection, the already-loaded parent chain is used.
+
+    A defensive cycle check prevents infinite loops if malformed
+    category data exists.
+    """
+
+    categories = list(categories)
+
+    if not categories:
+        return categories
+
+    resolved_roots = {}
+
+    for category in categories:
+        current = category
+        visited = set()
+
+        while current.parent_id:
+            current_id = current.pk
+
+            if current_id in visited:
+                # Defensive protection against malformed
+                # cyclic category data.
+                break
+
+            visited.add(current_id)
+
+            parent = getattr(current, "parent", None)
+
+            if parent is None:
+                break
+
+            current = parent
+
+        if current.pk not in visited:
+            resolved_roots[category.pk] = current.pk
+        else:
+            # Defensive fallback for a malformed cycle.
+            resolved_roots[category.pk] = category.pk
+
+    for category in categories:
+        setattr(
+            category,
+            "_annotated_root_category_id",
+            resolved_roots.get(category.pk),
+        )
+
+    return categories
+
+
+# ==========================================================
+# Public Category List
+# ==========================================================
+
+class PublicProductCategoryListView(generics.ListAPIView):
+    """
+    Public list of active product categories.
     """
 
     serializer_class = PublicProductCategorySerializer
+
     permission_classes = [
         AllowAny,
     ]
@@ -55,30 +216,43 @@ class PublicProductCategoryListView(
     ]
 
     def get_queryset(self):
+        return get_public_category_queryset()
 
-        return (
-            ProductCategory.objects
-            .filter(
-                is_active=True,
-            )
-            .select_related(
-                "parent",
-            )
+    def list(self, request, *args, **kwargs):
+        """
+        Materialize once so root category IDs can be attached
+        without serializer N+1 queries.
+        """
+
+        queryset = self.filter_queryset(
+            self.get_queryset()
         )
 
+        categories = list(queryset)
 
-# ==================================================
+        attach_root_category_ids(categories)
+
+        serializer = self.get_serializer(
+            categories,
+            many=True,
+        )
+
+        return Response(serializer.data)
+
+
+# ==========================================================
 # Public Category Detail
-# ==================================================
+# ==========================================================
 
 class PublicProductCategoryDetailView(
-    generics.RetrieveAPIView,
+    generics.RetrieveAPIView
 ):
     """
-    Return a single active product category.
+    Public detail endpoint for an active category.
     """
 
     serializer_class = PublicProductCategorySerializer
+
     permission_classes = [
         AllowAny,
     ]
@@ -86,78 +260,105 @@ class PublicProductCategoryDetailView(
     lookup_field = "slug"
 
     def get_queryset(self):
+        return get_public_category_queryset()
 
-        return (
-            ProductCategory.objects
-            .filter(
-                is_active=True,
-            )
-            .select_related(
-                "parent",
-            )
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        attach_root_category_ids(
+            [instance],
         )
 
+        serializer = self.get_serializer(instance)
 
-# ==================================================
-# Category Options API
-# ==================================================
+        return Response(serializer.data)
+
+
+# ==========================================================
+# Public Category Options
+# ==========================================================
 
 class CategoryOptionsView(APIView):
     """
-    GET:
-        Return the category options (option templates)
-        for a specific category.
-        
-        This helps vendors know what options they can
-        define when creating products in this category.
+    Return active options belonging to an active category.
+
+    Example:
+
+        GET /categories/<slug>/options/
     """
 
-    permission_classes = [AllowAny]
+    permission_classes = [
+        AllowAny,
+    ]
 
     def get(self, request, category_slug):
-        try:
-            category = ProductCategory.objects.get(
+        category = (
+            ProductCategory.objects
+            .filter(
                 slug=category_slug,
                 is_active=True,
             )
-        except ProductCategory.DoesNotExist:
+            .only(
+                "id",
+                "name",
+                "slug",
+            )
+            .first()
+        )
+
+        if category is None:
             return Response(
-                {"error": "Category not found."},
+                {
+                    "detail": "Category not found.",
+                },
                 status=404,
             )
 
-        # Get all category options (including inherited)
-        category_options = CategoryOption.objects.filter(
-            category=category,
-            is_active=True,
-        ).order_by('sort_order', 'name')
+        category_options = (
+            CategoryOption.objects
+            .filter(
+                category_id=category.pk,
+                is_active=True,
+            )
+            .only(
+                "id",
+                "name",
+                "slug",
+                "sort_order",
+            )
+            .order_by(
+                "sort_order",
+                "name",
+            )
+        )
 
         serializer = CategoryOptionSimpleSerializer(
             category_options,
             many=True,
         )
 
-        return Response({
-            "category": {
-                "id": str(category.id),
-                "name": category.name,
-                "slug": category.slug,
-            },
-            "options": serializer.data,
-            "count": len(serializer.data),
-        })
+        return Response(
+            {
+                "category": {
+                    "id": str(category.id),
+                    "name": category.name,
+                    "slug": category.slug,
+                },
+                "options": serializer.data,
+                "count": len(serializer.data),
+            }
+        )
 
 
-# ==================================================
+# ==========================================================
 # Admin Category List / Create
-# ==================================================
+# ==========================================================
 
 class AdminProductCategoryListCreateView(
-    generics.ListCreateAPIView,
+    generics.ListCreateAPIView
 ):
     """
-    Admin endpoint for listing and creating
-    product categories.
+    Admin category list and creation endpoint.
     """
 
     permission_classes = [
@@ -190,25 +391,28 @@ class AdminProductCategoryListCreateView(
     ]
 
     def get_queryset(self):
+        return get_category_queryset()
 
-        return (
-            ProductCategory.objects
-            .select_related(
-                "parent",
-            )
-        )
+    def perform_create(self, serializer):
+        """
+        Keep creation through the serializer.
+
+        This method is intentionally thin because category
+        creation does not require additional ownership logic.
+        """
+
+        serializer.save()
 
 
-# ==================================================
+# ==========================================================
 # Admin Category Detail
-# ==================================================
+# ==========================================================
 
 class AdminProductCategoryDetailView(
-    generics.RetrieveUpdateDestroyAPIView,
+    generics.RetrieveUpdateDestroyAPIView
 ):
     """
-    Admin endpoint for retrieving, updating,
-    and deleting a product category.
+    Admin category retrieve/update/delete endpoint.
     """
 
     permission_classes = [
@@ -220,10 +424,7 @@ class AdminProductCategoryDetailView(
     lookup_field = "pk"
 
     def get_queryset(self):
+        return get_category_queryset()
 
-        return (
-            ProductCategory.objects
-            .select_related(
-                "parent",
-            )
-        )
+    def perform_update(self, serializer):
+        serializer.save()

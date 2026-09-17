@@ -1,10 +1,3 @@
-"""
-Service layer for product options management.
-
-Handles auto-creation of ProductOption records from CategoryOption templates
-and provides utilities for both variable products (with variants) and simple
-products (without variants).
-"""
 from django.db import transaction
 from django.utils.text import slugify
 
@@ -17,167 +10,453 @@ from vendors.models import (
 
 
 class ProductOptionService:
-    """Service for managing product options."""
-    
+    """
+    Service responsible for product option management.
+
+    Architecture:
+
+        CategoryOption
+              │
+              ▼
+        ProductOption
+              │
+              ▼
+        ProductOptionValue
+
+    CategoryOption is the category-level template.
+    ProductOption is the product-specific copy.
+    """
+
+    # ============================================================
+    # CREATE FROM CATEGORY
+    # ============================================================
+
     @staticmethod
     @transaction.atomic
     def create_options_from_category(product: Product) -> int:
         """
-        Auto-create ProductOption records from CategoryOption templates.
-        
-        This is called when a product is created or its category changes.
-        Returns the number of options created.
-        
-        Args:
-            product: The product instance
-            
+        Create ProductOption records from active CategoryOption
+        templates belonging to the product's category.
+
+        Existing product options are preserved.
+
         Returns:
-            int: Number of ProductOption records created
+            Number of newly created ProductOption records.
         """
-        if not product.category:
+
+        if not product.category_id:
             return 0
-        
-        created_count = 0
-        category = product.category
-        
-        # Get all active category options for this category
-        category_options = CategoryOption.objects.filter(
-            category=category,
-            is_active=True,
-        ).order_by('sort_order', 'name')
-        
-        for cat_option in category_options:
-            # Avoid duplicates
-            option_exists = ProductOption.objects.filter(
-                product=product,
-                name__iexact=cat_option.name,
-            ).exists()
-            
-            if not option_exists:
-                ProductOption.objects.create(
-                    product=product,
-                    name=cat_option.name,
-                    slug=slugify(cat_option.name),
-                    sort_order=cat_option.sort_order,
+
+        category_options = list(
+            CategoryOption.objects.filter(
+                category_id=product.category_id,
+                is_active=True,
+            ).order_by(
+                "sort_order",
+                "name",
+            )
+        )
+
+        if not category_options:
+            return 0
+
+        existing_names = {
+            name.casefold()
+            for name in ProductOption.objects.filter(
+                product_id=product.id,
+            ).values_list(
+                "name",
+                flat=True,
+            )
+        }
+
+        to_create = []
+
+        for category_option in category_options:
+
+            normalized_name = (
+                category_option.name.strip()
+            )
+
+            if normalized_name.casefold() in existing_names:
+                continue
+
+            to_create.append(
+                ProductOption(
+                    product_id=product.id,
+                    name=normalized_name,
+                    slug=category_option.slug,
+                    sort_order=category_option.sort_order,
                     is_active=True,
                 )
-                created_count += 1
-        
-        return created_count
-    
+            )
+
+            existing_names.add(
+                normalized_name.casefold()
+            )
+
+        if not to_create:
+            return 0
+
+        ProductOption.objects.bulk_create(
+            to_create,
+            batch_size=100,
+        )
+
+        return len(to_create)
+
+    # ============================================================
+    # CATEGORY OPTIONS
+    # ============================================================
+
     @staticmethod
-    def get_category_options_for_product(product: Product) -> list:
+    def get_category_options_for_product(product: Product):
         """
-        Get all applicable category options for a product.
-        
-        Args:
-            product: The product instance
-            
-        Returns:
-            list: QuerySet of CategoryOption
+        Return active CategoryOption templates applicable to
+        the product category.
         """
-        if not product.category:
+
+        if not product.category_id:
             return CategoryOption.objects.none()
-        
-        return CategoryOption.objects.filter(
-            category=product.category,
-            is_active=True,
-        ).order_by('sort_order', 'name')
-    
+
+        return (
+            CategoryOption.objects
+            .filter(
+                category_id=product.category_id,
+                is_active=True,
+            )
+            .order_by(
+                "sort_order",
+                "name",
+            )
+        )
+
+    # ============================================================
+    # PRODUCT TYPE
+    # ============================================================
+
     @staticmethod
     def is_variable_product(product: Product) -> bool:
         """
-        Determine if a product is a variable product (has variants).
-        
-        Args:
-            product: The product instance
-            
-        Returns:
-            bool: True if product has variants, False otherwise
+        A product is variable when at least one variant exists.
         """
+
         return product.variants.exists()
-    
+
     @staticmethod
     def is_simple_product(product: Product) -> bool:
         """
-        Determine if a product is a simple product (no variants).
-        
-        Args:
-            product: The product instance
-            
-        Returns:
-            bool: True if product has no variants, False otherwise
+        A product is simple when it has no variants.
         """
+
         return not product.variants.exists()
-    
+
     @staticmethod
     def get_product_type(product: Product) -> str:
         """
-        Get the product type as a string.
-        
-        Args:
-            product: The product instance
-            
-        Returns:
-            str: Either 'variable' or 'simple'
+        Return:
+            'variable'
+            'simple'
         """
-        return 'variable' if ProductOptionService.is_variable_product(product) else 'simple'
-    
+
+        return (
+            "variable"
+            if product.variants.exists()
+            else "simple"
+        )
+
+    @staticmethod
+    def get_product_type_from_counts(
+        *,
+        variants_count: int,
+    ) -> str:
+        """
+        Determine product type when the caller already has
+        the variant count.
+
+        Avoids another database query.
+        """
+
+        return (
+            "variable"
+            if variants_count > 0
+            else "simple"
+        )
+
+    # ============================================================
+    # PRODUCT OPTIONS
+    # ============================================================
+
+    @staticmethod
+    def get_product_options(
+        product: Product,
+        *,
+        active_only: bool = True,
+        with_values: bool = False,
+    ):
+        """
+        Return product options.
+
+        Args:
+            product:
+                Product instance.
+
+            active_only:
+                Restrict to active options.
+
+            with_values:
+                Prefetch option values.
+        """
+
+        queryset = ProductOption.objects.filter(
+            product_id=product.id,
+        )
+
+        if active_only:
+            queryset = queryset.filter(
+                is_active=True,
+            )
+
+        queryset = queryset.order_by(
+            "sort_order",
+            "name",
+        )
+
+        if with_values:
+            queryset = queryset.prefetch_related(
+                "values",
+            )
+
+        return queryset
+
+    # ============================================================
+    # OPTION VALUES
+    # ============================================================
+
+    @staticmethod
+    def get_option_values(
+        product_option: ProductOption,
+        *,
+        active_only: bool = True,
+    ):
+        """
+        Return values belonging to a ProductOption.
+        """
+
+        queryset = product_option.values.all()
+
+        if active_only:
+            queryset = queryset.filter(
+                is_active=True,
+            )
+
+        return queryset.order_by(
+            "sort_order",
+            "name",
+        )
+
+    # ============================================================
+    # FIND OPTION
+    # ============================================================
+
+    @staticmethod
+    def get_product_option(
+        product: Product,
+        name: str,
+    ):
+        """
+        Find a product option case-insensitively.
+        """
+
+        if not name:
+            return None
+
+        return (
+            ProductOption.objects
+            .filter(
+                product_id=product.id,
+                name__iexact=name.strip(),
+            )
+            .first()
+        )
+
+    # ============================================================
+    # ENSURE OPTION
+    # ============================================================
+
+    @staticmethod
+    @transaction.atomic
+    def ensure_option(
+        product: Product,
+        name: str,
+        *,
+        slug: str | None = None,
+        sort_order: int = 0,
+        is_active: bool = True,
+    ) -> ProductOption:
+        """
+        Get an existing option or create it.
+
+        Note:
+            Database uniqueness is based on exact name/slug
+            values. Application-level case-insensitive matching
+            is used before creation.
+        """
+
+        normalized_name = name.strip()
+
+        existing = (
+            ProductOption.objects
+            .filter(
+                product_id=product.id,
+                name__iexact=normalized_name,
+            )
+            .first()
+        )
+
+        if existing:
+            return existing
+
+        option_slug = (
+            slugify(slug)
+            if slug
+            else slugify(normalized_name)
+        )
+
+        return ProductOption.objects.create(
+            product_id=product.id,
+            name=normalized_name,
+            slug=option_slug,
+            sort_order=sort_order,
+            is_active=is_active,
+        )
+
+    # ============================================================
+    # ENSURE OPTION VALUE
+    # ============================================================
+
+    @staticmethod
+    @transaction.atomic
+    def ensure_option_value(
+        product_option: ProductOption,
+        name: str,
+        *,
+        slug: str | None = None,
+        sort_order: int = 0,
+        is_active: bool = True,
+    ) -> ProductOptionValue:
+        """
+        Get an existing option value or create it.
+        """
+
+        normalized_name = name.strip()
+
+        existing = (
+            ProductOptionValue.objects
+            .filter(
+                option_id=product_option.id,
+                name__iexact=normalized_name,
+            )
+            .first()
+        )
+
+        if existing:
+            return existing
+
+        value_slug = (
+            slugify(slug)
+            if slug
+            else slugify(normalized_name)
+        )
+
+        return ProductOptionValue.objects.create(
+            option_id=product_option.id,
+            name=normalized_name,
+            slug=value_slug,
+            sort_order=sort_order,
+            is_active=is_active,
+        )
+
+    # ============================================================
+    # VALIDATION
+    # ============================================================
+
     @staticmethod
     def validate_product_options(product: Product) -> dict:
         """
-        Validate that a product has all required options properly configured.
-        
-        Returns validation status and any warnings.
-        
-        Args:
-            product: The product instance
-            
-        Returns:
-            dict: Validation result with keys:
-                - is_valid: bool
-                - product_type: str ('simple' or 'variable')
-                - option_count: int
-                - variants_count: int
-                - messages: list of validation messages
+        Validate the product's option/variant configuration.
+
+        Product type is determined by whether variants exist.
         """
-        messages = []
+
         option_count = product.options.count()
         variants_count = product.variants.count()
-        is_variable = ProductOptionService.is_variable_product(product)
-        
+
+        messages = []
+
+        is_variable = variants_count > 0
+
+        # --------------------------------------------------------
+        # Variable product
+        # --------------------------------------------------------
+
         if is_variable:
-            # Variable product validations
+
             if option_count == 0:
                 messages.append(
-                    "Variable product has no options defined. "
-                    "Vendors should define options before creating variants."
+                    "Variable product has no options defined."
                 )
-            
-            if variants_count == 0:
-                messages.append(
-                    "Variable product has options but no variants. "
-                    "At least one variant should be created."
+
+            active_options = (
+                product.options
+                .filter(
+                    is_active=True,
                 )
-            
-            # Check if all options have at least one value
-            for option in product.options.filter(is_active=True):
-                if not option.has_values:
+                .prefetch_related(
+                    "values",
+                )
+            )
+
+            for option in active_options:
+
+                # Use prefetched values rather than
+                # option.has_values, because has_values
+                # performs .exists().
+                values = getattr(
+                    option,
+                    "_prefetched_objects_cache",
+                    {},
+                ).get(
+                    "values",
+                    [],
+                )
+
+                if not values:
                     messages.append(
-                        f"Option '{option.name}' has no values defined."
+                        f"Option '{option.name}' has "
+                        "no values defined."
                     )
+
+        # --------------------------------------------------------
+        # Simple product
+        # --------------------------------------------------------
+
         else:
-            # Simple product validations
+
             if option_count > 0:
                 messages.append(
-                    "Simple product (no variants) has options defined. "
-                    "Options are typically used for variable products."
+                    "Simple product has options defined. "
+                    "Options are normally used for variable products."
                 )
-        
+
         return {
-            'is_valid': len(messages) == 0,
-            'product_type': 'variable' if is_variable else 'simple',
-            'option_count': option_count,
-            'variants_count': variants_count,
-            'messages': messages,
+            "is_valid": not messages,
+            "product_type": (
+                "variable"
+                if is_variable
+                else "simple"
+            ),
+            "option_count": option_count,
+            "variants_count": variants_count,
+            "messages": messages,
         }

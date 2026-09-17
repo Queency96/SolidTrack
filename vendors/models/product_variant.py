@@ -141,16 +141,6 @@ class ProductVariant(models.Model):
         auto_now=True,
     )
 
-    # ==================================================
-    # Variant Image
-    # ==================================================
-
-    productvariantimage = models.ForeignKey(
-        "vendors.ProductVariantImage",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
 
     # ==================================================
     # Meta

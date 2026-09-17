@@ -3,52 +3,203 @@ from rest_framework import serializers
 from vendors.models import ProductImage
 
 
-class ProductImageSerializer(serializers.ModelSerializer):
-    """
-    Serializer for product-level images.
+# ============================================================
+# Product Image Serializer
+# ============================================================
 
-    Cloudinary handles the actual image storage.
-    The API exposes the resulting image URL.
+class ProductImageSerializer(
+    serializers.ModelSerializer,
+):
     """
+    Serializer for ProductImage representation.
+
+    Product ownership is controlled by the view/service and is
+    therefore not writable through this serializer.
+
+    Image lifecycle operations such as:
+
+        - create
+        - update
+        - delete
+        - make primary
+        - ensure primary
+
+    should be handled by ProductImageService.
+    """
+
+    # ========================================================
+    # Related Product
+    # ========================================================
+
+    product_id = serializers.ReadOnlyField(
+        source="product_id",
+    )
+
+    # ========================================================
+    # Cloudinary URL
+    # ========================================================
 
     image_url = serializers.SerializerMethodField()
+
+    # ========================================================
+    # Meta
+    # ========================================================
+
+    class Meta:
+        model = ProductImage
+
+        fields = [
+            # ------------------------------------------------
+            # Identity
+            # ------------------------------------------------
+
+            "id",
+
+            # ------------------------------------------------
+            # Relationship
+            # ------------------------------------------------
+
+            "product_id",
+
+            # ------------------------------------------------
+            # Image
+            # ------------------------------------------------
+
+            "image",
+            "image_url",
+            "alt_text",
+
+            # ------------------------------------------------
+            # Display
+            # ------------------------------------------------
+
+            "is_primary",
+            "display_order",
+
+            # ------------------------------------------------
+            # Status
+            # ------------------------------------------------
+
+            "is_active",
+
+            # ------------------------------------------------
+            # Timestamps
+            # ------------------------------------------------
+
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            # Identity
+            "id",
+
+            # Relationship
+            "product_id",
+
+            # Computed
+            "image_url",
+
+            # Timestamps
+            "created_at",
+            "updated_at",
+        ]
+
+    # ========================================================
+    # Cloudinary URL
+    # ========================================================
+
+    def get_image_url(self, obj):
+        """
+        Return the Cloudinary URL for the image.
+
+        CloudinaryField normally exposes `.url`, but the
+        fallback makes the serializer safe if the field contains
+        an object without a usable URL property.
+        """
+
+        image = getattr(
+            obj,
+            "image",
+            None,
+        )
+
+        if not image:
+            return None
+
+        try:
+            url = image.url
+
+            if url:
+                return str(url)
+
+        except (
+            AttributeError,
+            ValueError,
+        ):
+            pass
+
+        try:
+            value = str(image)
+
+        except (AttributeError, ValueError):
+            return None
+
+        return value or None
+
+
+
+
+
+class ProductImageCreateSerializer(
+    serializers.ModelSerializer,
+):
+    """
+    Serializer for creating a ProductImage.
+
+    The product is assigned by the view/service.
+    """
 
     class Meta:
         model = ProductImage
 
         fields = [
             "id",
-            "product",
             "image",
-            "image_url",
             "alt_text",
             "is_primary",
             "display_order",
             "is_active",
-            "created_at",
-            "updated_at",
         ]
 
         read_only_fields = [
             "id",
-            "image_url",
-            "created_at",
-            "updated_at",
         ]
 
-    def get_image_url(self, obj):
-        """
-        Return the absolute image URL.
-        """
 
-        if not obj.image:
-            return None
 
-        request = self.context.get("request")
 
-        url = obj.image.url
+class ProductImageUpdateSerializer(
+    serializers.ModelSerializer,
+):
+    """
+    Serializer for updating an existing ProductImage.
 
-        if request:
-            return request.build_absolute_uri(url)
+    Product ownership cannot be changed.
+    """
 
-        return url
+    class Meta:
+        model = ProductImage
+
+        fields = [
+            "id",
+            "image",
+            "alt_text",
+            "is_primary",
+            "display_order",
+            "is_active",
+        ]
+
+        read_only_fields = [
+            "id",
+        ]

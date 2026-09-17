@@ -1,110 +1,183 @@
-from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 
 from vendors.models import (
     Product,
+    ProductOptionValue,
     ProductVariant,
+    ProductVariantOptionValue,
 )
 
-from vendors.serializers.product_variant import (
-    ProductVariantSerializer, ProductVariantCreateSerializer, ProductVariantUpdateSerializer,
+from vendors.serializers.product import (
+    ProductVariantSerializer,
 )
-
 
 
 class ProductVariantListCreateView(
     generics.ListCreateAPIView
 ):
-    """
-    List and create variants belonging to a product.
-    """
-
     permission_classes = [
         IsAuthenticated,
     ]
 
+    serializer_class = ProductVariantSerializer
+
+    def get_product(self):
+        return Product.objects.filter(
+            pk=self.kwargs["product_id"],
+            vendor__user=self.request.user,
+        ).first()
+
     def get_queryset(self):
+        product = self.get_product()
+
+        if product is None:
+            return ProductVariant.objects.none()
 
         return (
             ProductVariant.objects
-            .select_related(
-                "product",
-                "product__store",
-            )
+            .filter(product=product)
             .prefetch_related(
-                "variant_option_values__option_value__option",
+                "option_values",
                 "option_values__option",
-            )
-            .filter(
-                product_id=self.kwargs["product_id"],
-                product__vendor=(
-                    self.request.user.vendor_profile
-                ),
-            )
-            .order_by(
-                "sort_order",
-                "created_at",
+                "images",
             )
         )
 
-    def get_serializer_class(self):
-
-        if self.request.method == "POST":
-            return ProductVariantCreateSerializer
-
-        return ProductVariantSerializer
-
+    @transaction.atomic
     def perform_create(self, serializer):
+        product = self.get_product()
 
-        product = get_object_or_404(
-            Product,
-            pk=self.kwargs["product_id"],
-            vendor=self.request.user.vendor_profile,
+        if product is None:
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound(
+                "Product not found."
+            )
+
+        variant = serializer.save(
+            product=product
         )
 
-        serializer.save(
+        # --------------------------------------------------
+        # Ensure only one default variant.
+        # --------------------------------------------------
+
+        if variant.is_default:
+            ProductVariant.objects.filter(
+                product=product,
+                is_default=True,
+            ).exclude(
+                pk=variant.pk
+            ).update(
+                is_default=False
+            )
+
+        # --------------------------------------------------
+        # If this is the first variant, make it default.
+        # --------------------------------------------------
+
+        if not ProductVariant.objects.filter(
             product=product,
-        )
+            is_default=True,
+        ).exists():
+            variant.is_default = True
+
+            variant.save(
+                update_fields=[
+                    "is_default",
+                    "updated_at",
+                ]
+            )
 
 
 class ProductVariantDetailView(
     generics.RetrieveUpdateDestroyAPIView
 ):
-    """
-    Retrieve, update, or delete a product variant.
-    """
-
     permission_classes = [
         IsAuthenticated,
     ]
 
-    def get_queryset(self):
+    serializer_class = ProductVariantSerializer
 
+    def get_queryset(self):
         return (
             ProductVariant.objects
-            .select_related(
-                "product",
-                "product__store",
+            .filter(
+                product__vendor__user=self.request.user,
+                product_id=self.kwargs["product_id"],
             )
             .prefetch_related(
-                "variant_option_values__option_value__option",
+                "option_values",
                 "option_values__option",
-            )
-            .filter(
-                product__vendor=(
-                    self.request.user.vendor_profile
-                ),
+                "images",
             )
         )
 
-    def get_serializer_class(self):
+    @transaction.atomic
+    def perform_update(self, serializer):
+        variant = self.get_object()
 
-        if self.request.method in [
-            "PUT",
-            "PATCH",
-        ]:
-            return ProductVariantUpdateSerializer
+        requested_default = serializer.validated_data.get(
+            "is_default",
+            variant.is_default,
+        )
 
-        return ProductVariantSerializer
+        serializer.save()
+
+        if requested_default:
+            ProductVariant.objects.filter(
+                product=variant.product,
+                is_default=True,
+            ).exclude(
+                pk=variant.pk
+            ).update(
+                is_default=False
+            )
+
+        elif not ProductVariant.objects.filter(
+            product=variant.product,
+            is_default=True,
+        ).exists():
+            variant.is_default = True
+
+            variant.save(
+                update_fields=[
+                    "is_default",
+                    "updated_at",
+                ]
+            )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        product = instance.product
+        was_default = instance.is_default
+
+        instance.delete()
+
+        if was_default:
+            replacement = (
+                ProductVariant.objects
+                .filter(
+                    product=product,
+                    is_active=True,
+                )
+                .order_by(
+                    "sort_order",
+                    "created_at",
+                )
+                .first()
+            )
+
+            if replacement:
+                replacement.is_default = True
+
+                replacement.save(
+                    update_fields=[
+                        "is_default",
+                        "updated_at",
+                    ]
+                )

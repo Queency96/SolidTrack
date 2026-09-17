@@ -1,55 +1,137 @@
 from rest_framework import serializers
-from vendors.models.product_variant_image import ProductVariantImage
 
+from vendors.models import ProductVariantImage
+
+
+# ============================================================
+# Product Variant Image Serializer
+# ============================================================
 
 class ProductVariantImageSerializer(
     serializers.ModelSerializer,
 ):
     """
-    Serializer for images belonging to a specific
-    product variant.
+    Serializer for displaying a ProductVariantImage.
 
-    Cloudinary handles image storage.
+    Variant ownership is read-only.
+
+    Image lifecycle operations such as:
+
+        - create
+        - update
+        - delete
+        - make primary
+        - ensure primary
+
+    should be handled by ProductVariantImageService.
     """
 
-    image_url = serializers.SerializerMethodField()
+    # ========================================================
+    # Related IDs
+    # ========================================================
+
+    variant_id = serializers.ReadOnlyField(
+        source="variant_id",
+    )
+
+    product_id = serializers.ReadOnlyField(
+        source="product_id",
+    )
+
+    # ========================================================
+    # Meta
+    # ========================================================
 
     class Meta:
         model = ProductVariantImage
 
         fields = [
+            # ------------------------------------------------
+            # Identity
+            # ------------------------------------------------
+
             "id",
+
+            # ------------------------------------------------
+            # Relationships
+            # ------------------------------------------------
+
             "variant",
+            "variant_id",
+            "product_id",
+
+            # ------------------------------------------------
+            # Image
+            # ------------------------------------------------
+
             "image",
-            "image_url",
             "alt_text",
+
+            # ------------------------------------------------
+            # Display
+            # ------------------------------------------------
+
             "is_primary",
             "display_order",
+
+            # ------------------------------------------------
+            # Status
+            # ------------------------------------------------
+
             "is_active",
+            "is_available",
+
+            # ------------------------------------------------
+            # Timestamps
+            # ------------------------------------------------
+
             "created_at",
             "updated_at",
         ]
 
         read_only_fields = [
+            # Identity
             "id",
-            "image_url",
+
+            # Relationships
+            "variant",
+            "variant_id",
+            "product_id",
+
+            # Computed
+            "is_available",
+
+            # Timestamps
             "created_at",
             "updated_at",
         ]
 
-    def get_image_url(self, obj):
-        """
-        Return the absolute Cloudinary image URL.
-        """
 
-        if not obj.image:
-            return None
 
-        request = self.context.get("request")
 
-        url = obj.image.url
 
-        if request:
-            return request.build_absolute_uri(url)
+class ProductVariantImageCreateSerializer(
+    serializers.ModelSerializer,
+):
+    class Meta:
+        model = ProductVariantImage
 
-        return url
+        fields = [
+            "image",
+            "alt_text",
+            "is_primary",
+            "display_order",
+            "is_active",
+        ]
+
+        extra_kwargs = {
+            "is_primary": {
+                "required": False,
+            },
+            "display_order": {
+                "required": False,
+            },
+            "is_active": {
+                "required": False,
+            },
+        }
