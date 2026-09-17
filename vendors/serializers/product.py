@@ -1,6 +1,7 @@
 from django.db import transaction
-from django.db.models import Prefetch
 from django.utils.text import slugify
+
+from drf_spectacular.utils import extend_schema_field
 
 from rest_framework import serializers
 
@@ -1307,8 +1308,6 @@ class ProductCreateSerializer(
         variant_metadata = []
 
         for variant_data in variants_data:
-            # Make a copy so validated_data is not unexpectedly
-            # mutated while building the nested records.
             variant_data = dict(
                 variant_data
             )
@@ -1439,6 +1438,30 @@ class ProductCreateSerializer(
             )
 
         return product
+
+
+# ============================================================
+# VARIANT OPTION VALUE OUTPUT
+# ============================================================
+
+
+class ProductVariantOptionValueOutputSerializer(
+    serializers.Serializer
+):
+    """
+    Explicit OpenAPI representation of the object returned by
+    ProductVariantSerializer.get_option_values().
+    """
+
+    id = serializers.UUIDField()
+
+    option = serializers.DictField(
+        child=serializers.CharField()
+    )
+
+    name = serializers.CharField()
+
+    slug = serializers.CharField()
 
 
 # ============================================================
@@ -1583,6 +1606,11 @@ class ProductVariantSerializer(
     # OPTION VALUES
     # ========================================================
 
+    @extend_schema_field(
+        ProductVariantOptionValueOutputSerializer(
+            many=True
+        )
+    )
     def get_option_values(self, obj):
         """
         Uses the through model because the recommended queryset
@@ -1655,6 +1683,11 @@ class ProductVariantSerializer(
             )
         )
 
+    @extend_schema_field(
+        ProductVariantImageSerializer(
+            many=True
+        )
+    )
     def get_images(self, obj):
         images = self._get_images(obj)
 
@@ -1664,6 +1697,11 @@ class ProductVariantSerializer(
             context=self.context,
         ).data
 
+    @extend_schema_field(
+        ProductVariantImageSerializer(
+            allow_null=True
+        )
+    )
     def get_primary_image(self, obj):
         images = self._get_images(obj)
 
@@ -2118,6 +2156,11 @@ class PublicProductSerializer(
             )
         )
 
+    @extend_schema_field(
+        ProductImageSerializer(
+            many=True
+        )
+    )
     def get_images(self, obj):
         images = self._get_images(obj)
 
@@ -2127,6 +2170,11 @@ class PublicProductSerializer(
             context=self.context,
         ).data
 
+    @extend_schema_field(
+        ProductImageSerializer(
+            allow_null=True
+        )
+    )
     def get_primary_image(self, obj):
         images = self._get_images(obj)
 
@@ -2249,6 +2297,11 @@ class PublicProductDetailSerializer(
             )
         )
 
+    @extend_schema_field(
+        ProductImageSerializer(
+            many=True
+        )
+    )
     def get_images(self, obj):
         images = self._get_images(obj)
 
@@ -2258,6 +2311,11 @@ class PublicProductDetailSerializer(
             context=self.context,
         ).data
 
+    @extend_schema_field(
+        ProductImageSerializer(
+            allow_null=True
+        )
+    )
     def get_primary_image(self, obj):
         images = self._get_images(obj)
 
@@ -2285,6 +2343,11 @@ class PublicProductDetailSerializer(
     # OPTIONS
     # ========================================================
 
+    @extend_schema_field(
+        ProductOptionSerializer(
+            many=True
+        )
+    )
     def get_options(self, obj):
         options = getattr(
             obj,
@@ -2295,7 +2358,7 @@ class PublicProductDetailSerializer(
         if options is None:
             options = list(
                 obj.options
-                .filter(active=True)
+                .filter(is_active=True)
                 .prefetch_related(
                     "values",
                 )
@@ -2315,6 +2378,11 @@ class PublicProductDetailSerializer(
     # VARIANTS
     # ========================================================
 
+    @extend_schema_field(
+        ProductVariantSerializer(
+            many=True
+        )
+    )
     def get_variants(self, obj):
         variants = getattr(
             obj,

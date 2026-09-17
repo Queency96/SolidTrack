@@ -11,6 +11,10 @@ from vendors.serializers.product_variant_option_value import (
 )
 
 
+# ============================================================
+# List / Create
+# ============================================================
+
 class ProductVariantOptionValueListCreateView(
     generics.ListCreateAPIView
 ):
@@ -35,6 +39,12 @@ class ProductVariantOptionValueListCreateView(
     serializer_class = ProductVariantOptionValueSerializer
 
     # ============================================================
+    # Schema-safe queryset
+    # ============================================================
+
+    queryset = ProductVariantOptionValue.objects.none()
+
+    # ============================================================
     # Variant Resolution
     # ============================================================
 
@@ -42,11 +52,24 @@ class ProductVariantOptionValueListCreateView(
         """
         Resolve the requested variant once and cache it.
 
-        Ownership is enforced through the product -> vendor -> user
-        relationship.
+        Ownership is enforced through:
+
+            ProductVariant
+                -> Product
+                    -> Vendor
+                        -> User
         """
 
         if not hasattr(self, "_variant"):
+
+            variant_id = self.kwargs.get(
+                "variant_id"
+            )
+
+            if not variant_id:
+                self._variant = None
+                return self._variant
+
             self._variant = (
                 ProductVariant.objects
                 .select_related(
@@ -54,7 +77,7 @@ class ProductVariantOptionValueListCreateView(
                     "product__vendor",
                 )
                 .filter(
-                    pk=self.kwargs["variant_id"],
+                    pk=variant_id,
                     product__vendor__user=self.request.user,
                 )
                 .first()
@@ -70,6 +93,9 @@ class ProductVariantOptionValueListCreateView(
         """
         Return option-value assignments belonging to the selected
         variant and authenticated vendor.
+
+        During schema generation there may be no variant_id in
+        kwargs. In that case an empty queryset is returned.
         """
 
         variant = self.get_variant()
@@ -105,7 +131,12 @@ class ProductVariantOptionValueListCreateView(
         Attach the validated option value to the selected variant.
 
         The client does not control the variant relationship.
-        The variant comes from the URL and authenticated vendor.
+
+        The variant comes from:
+
+            URL
+                +
+            authenticated vendor ownership
         """
 
         variant = self.get_variant()
@@ -147,6 +178,10 @@ class ProductVariantOptionValueListCreateView(
         return context
 
 
+# ============================================================
+# Retrieve / Delete
+# ============================================================
+
 class ProductVariantOptionValueDetailView(
     generics.RetrieveDestroyAPIView
 ):
@@ -161,6 +196,7 @@ class ProductVariantOptionValueDetailView(
         Remove the assignment.
 
     The underlying ProductOptionValue is never deleted.
+
     Only the ProductVariantOptionValue relationship is removed.
     """
 
@@ -169,6 +205,12 @@ class ProductVariantOptionValueDetailView(
     ]
 
     serializer_class = ProductVariantOptionValueSerializer
+
+    # ============================================================
+    # Schema-safe queryset
+    # ============================================================
+
+    queryset = ProductVariantOptionValue.objects.none()
 
     # ============================================================
     # Variant Resolution
@@ -182,6 +224,15 @@ class ProductVariantOptionValueDetailView(
         """
 
         if not hasattr(self, "_variant"):
+
+            variant_id = self.kwargs.get(
+                "variant_id"
+            )
+
+            if not variant_id:
+                self._variant = None
+                return self._variant
+
             self._variant = (
                 ProductVariant.objects
                 .select_related(
@@ -189,7 +240,7 @@ class ProductVariantOptionValueDetailView(
                     "product__vendor",
                 )
                 .filter(
-                    pk=self.kwargs["variant_id"],
+                    pk=variant_id,
                     product__vendor__user=self.request.user,
                 )
                 .first()
@@ -206,8 +257,11 @@ class ProductVariantOptionValueDetailView(
         Return only assignments belonging to the requested
         variant and authenticated vendor.
 
-        Scoping by variant_id is important because the URL identifies
-        both the parent variant and the assignment.
+        Scoping by variant_id is important because the URL
+        identifies both:
+
+            1. the parent variant
+            2. the assignment
         """
 
         variant = self.get_variant()
@@ -242,14 +296,22 @@ class ProductVariantOptionValueDetailView(
         """
         Pass the assignment's variant to the serializer.
 
-        The assignment itself is resolved through the ownership-
-        restricted queryset.
+        The assignment itself is resolved through the
+        ownership-restricted queryset.
         """
 
         context = super().get_serializer_context()
 
-        assignment = self.get_object()
+        # Do not call get_object() here.
+        #
+        # The serializer context is also involved in schema
+        # introspection, where there may be no URL kwargs.
+        #
+        # Resolve the variant directly instead.
 
-        context["variant"] = assignment.variant
+        variant = self.get_variant()
+
+        if variant is not None:
+            context["variant"] = variant
 
         return context

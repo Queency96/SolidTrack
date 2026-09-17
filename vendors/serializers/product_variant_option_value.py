@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from vendors.models import (
@@ -37,7 +38,7 @@ class ProductVariantOptionValueSerializer(
         6. A variant cannot have multiple values for
            the same option.
 
-    The actual lifecycle operation should remain in the
+    The actual lifecycle operation remains in the
     ProductVariantOptionValueService.
     """
 
@@ -71,9 +72,17 @@ class ProductVariantOptionValueSerializer(
         read_only=True,
     )
 
-    option_id = serializers.ReadOnlyField()
+    # --------------------------------------------------------
+    # Explicit schema types for model properties
+    # --------------------------------------------------------
 
-    display_name = serializers.ReadOnlyField()
+    option_id = serializers.SerializerMethodField(
+        read_only=True,
+    )
+
+    display_name = serializers.SerializerMethodField(
+        read_only=True,
+    )
 
     # ========================================================
     # Meta
@@ -124,6 +133,36 @@ class ProductVariantOptionValueSerializer(
             "display_name",
             "created_at",
         ]
+
+    # ========================================================
+    # Schema-typed Model Properties
+    # ========================================================
+
+    @extend_schema_field(serializers.UUIDField())
+    def get_option_id(self, obj):
+        """
+        Return the ProductOption UUID.
+
+        ProductVariantOptionValue exposes option_id as a
+        model property, so drf-spectacular cannot reliably
+        infer its type from ReadOnlyField().
+        """
+
+        return obj.option_id
+
+    # --------------------------------------------------------
+
+    @extend_schema_field(serializers.CharField())
+    def get_display_name(self, obj):
+        """
+        Return the human-readable option/value combination.
+
+        Example:
+
+            Color: Black
+        """
+
+        return obj.display_name
 
     # ========================================================
     # Validation
@@ -216,7 +255,7 @@ class ProductVariantOptionValueSerializer(
         # Option status
         # ----------------------------------------------------
 
-        if not option.active:
+        if not option.is_active:
             raise serializers.ValidationError(
                 {
                     "option_value_id": (
@@ -229,7 +268,7 @@ class ProductVariantOptionValueSerializer(
         # Option value status
         # ----------------------------------------------------
 
-        if not option_value.active:
+        if not option_value.is_active:
             raise serializers.ValidationError(
                 {
                     "option_value_id": (

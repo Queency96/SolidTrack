@@ -74,7 +74,7 @@ class ProductOptionValueSerializer(
             "name",
             "slug",
             "sort_order",
-            "active",
+            "is_active",
 
             # ------------------------------------------------
             # Computed
@@ -183,7 +183,7 @@ class ProductOptionSerializer(
             "name",
             "slug",
             "sort_order",
-            "active",
+            "is_active",
 
             # ------------------------------------------------
             # Values
@@ -466,7 +466,7 @@ class ProductVariantOptionValueSerializer(
         # Option status
         # ----------------------------------------------------
 
-        if not option.active:
+        if not option.is_active:
             raise serializers.ValidationError(
                 {
                     "option_value_id": (
@@ -479,7 +479,7 @@ class ProductVariantOptionValueSerializer(
         # Option value status
         # ----------------------------------------------------
 
-        if not option_value.active:
+        if not option_value.is_active:
             raise serializers.ValidationError(
                 {
                     "option_value_id": (

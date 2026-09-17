@@ -1,5 +1,5 @@
 from rest_framework import serializers
-
+from drf_spectacular.utils import extend_schema_field
 from ..models import ProductCategory
 
 
@@ -30,9 +30,13 @@ class ProductCategorySerializer(
     # Hierarchy
     # ========================================================
 
-    is_root = serializers.ReadOnlyField()
+    is_root = serializers.BooleanField(
+        read_only=True,
+    )
 
-    is_subcategory = serializers.ReadOnlyField()
+    is_subcategory = serializers.BooleanField(
+        read_only=True,
+    )
 
     has_children = serializers.BooleanField(
         source="_annotated_has_children",
@@ -147,9 +151,13 @@ class PublicProductCategorySerializer(
     # Hierarchy
     # ========================================================
 
-    is_root = serializers.ReadOnlyField()
+    is_root = serializers.BooleanField(
+        read_only=True,
+    )
 
-    is_subcategory = serializers.ReadOnlyField()
+    is_subcategory = serializers.BooleanField(
+        read_only=True,
+    )
 
     has_children = serializers.BooleanField(
         source="_annotated_has_children",
@@ -239,7 +247,9 @@ class PublicProductCategorySerializer(
     # Root Category
     # ========================================================
 
+    @extend_schema_field(serializers.UUIDField(allow_null=True))
     def get_root_category_id(self, obj):
+
         """
         Return the precomputed root category ID.
 
