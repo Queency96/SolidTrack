@@ -1,10 +1,12 @@
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import time
 from decimal import Decimal
 from html import escape
 from itertools import product as cartesian_product
 
-from django.core.files.base import ContentFile
+import cloudinary.uploader
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils.text import slugify
@@ -29,9 +31,25 @@ class Command(BaseCommand):
         "option values, Cloudinary images, and store operating hours."
     )
 
-    # ---------------------------------------------------------
-    # CONFIGURATION
-    # ---------------------------------------------------------
+    # =========================================================
+    # IMAGE GENERATION CONFIGURATION
+    # =========================================================
+
+    # Number of gallery images generated for every variant.
+    IMAGES_PER_VARIANT = 3
+
+    # Number of simultaneous Cloudinary uploads.
+    CLOUDINARY_WORKERS = 8
+
+    # Cloudinary root folder.
+    CLOUDINARY_FOLDER = "mock-products"
+
+    # Whether deterministic Cloudinary public IDs should be overwritten.
+    CLOUDINARY_OVERWRITE = True
+
+    # =========================================================
+    # GENERAL CONFIGURATION
+    # =========================================================
 
     DEFAULT_PRODUCTS_PER_STORE = 30
     DEFAULT_VARIANT_PRODUCTS = 20
@@ -43,28 +61,18 @@ class Command(BaseCommand):
 
     RANDOM_SEED = 20260915
 
-    # ---------------------------------------------------------
+    # =========================================================
     # PRODUCT DEFINITIONS
-    # ---------------------------------------------------------
-    #
-    # Each definition contains:
-    #   name
-    #   category
-    #   price
-    #   short_description
-    #   description
-    #
-    # Variant products additionally use the category's
-    # CategoryOption definitions below.
-    #
-    # ---------------------------------------------------------
+    # =========================================================
 
     VARIANT_PRODUCTS = [
         {
             "name": "Apple iPhone 15",
             "category": "Smartphones",
             "price": Decimal("850000"),
-            "short_description": "Premium Apple smartphone with advanced camera system.",
+            "short_description": (
+                "Premium Apple smartphone with advanced camera system."
+            ),
             "description": (
                 "Apple iPhone 15 with a modern design, powerful performance, "
                 "excellent cameras and all-day battery life."
@@ -74,7 +82,9 @@ class Command(BaseCommand):
             "name": "Samsung Galaxy S24",
             "category": "Smartphones",
             "price": Decimal("920000"),
-            "short_description": "Flagship Samsung smartphone with premium performance.",
+            "short_description": (
+                "Flagship Samsung smartphone with premium performance."
+            ),
             "description": (
                 "Samsung Galaxy S24 featuring a high-resolution display, "
                 "powerful processor and advanced camera capabilities."
@@ -84,7 +94,9 @@ class Command(BaseCommand):
             "name": "Google Pixel 9",
             "category": "Smartphones",
             "price": Decimal("880000"),
-            "short_description": "Google smartphone with intelligent camera features.",
+            "short_description": (
+                "Google smartphone with intelligent camera features."
+            ),
             "description": (
                 "Google Pixel 9 delivers clean Android software, "
                 "excellent photography and smooth everyday performance."
@@ -94,7 +106,9 @@ class Command(BaseCommand):
             "name": "Apple MacBook Air",
             "category": "Laptops",
             "price": Decimal("1450000"),
-            "short_description": "Slim and powerful Apple laptop for work and study.",
+            "short_description": (
+                "Slim and powerful Apple laptop for work and study."
+            ),
             "description": (
                 "Apple MacBook Air designed for productivity, portability "
                 "and everyday professional computing."
@@ -104,7 +118,9 @@ class Command(BaseCommand):
             "name": "Dell XPS 15",
             "category": "Laptops",
             "price": Decimal("1650000"),
-            "short_description": "Premium Dell laptop for demanding workloads.",
+            "short_description": (
+                "Premium Dell laptop for demanding workloads."
+            ),
             "description": (
                 "Dell XPS 15 combines premium construction, strong performance "
                 "and a high-quality display."
@@ -114,7 +130,9 @@ class Command(BaseCommand):
             "name": "HP Spectre x360",
             "category": "Laptops",
             "price": Decimal("1550000"),
-            "short_description": "Convertible premium HP laptop.",
+            "short_description": (
+                "Convertible premium HP laptop."
+            ),
             "description": (
                 "HP Spectre x360 is a versatile convertible laptop "
                 "for productivity, creativity and entertainment."
@@ -124,7 +142,9 @@ class Command(BaseCommand):
             "name": "Lenovo ThinkPad X1 Carbon",
             "category": "Laptops",
             "price": Decimal("1750000"),
-            "short_description": "Business-focused Lenovo laptop.",
+            "short_description": (
+                "Business-focused Lenovo laptop."
+            ),
             "description": (
                 "Lenovo ThinkPad X1 Carbon provides business-class "
                 "performance, portability and durability."
@@ -134,7 +154,9 @@ class Command(BaseCommand):
             "name": "Samsung 55-inch Smart TV",
             "category": "Televisions",
             "price": Decimal("780000"),
-            "short_description": "55-inch Samsung smart television.",
+            "short_description": (
+                "55-inch Samsung smart television."
+            ),
             "description": (
                 "Samsung Smart TV with a large high-quality display, "
                 "smart streaming features and immersive entertainment."
@@ -144,7 +166,9 @@ class Command(BaseCommand):
             "name": "LG 55-inch OLED TV",
             "category": "Televisions",
             "price": Decimal("1100000"),
-            "short_description": "Premium LG OLED television.",
+            "short_description": (
+                "Premium LG OLED television."
+            ),
             "description": (
                 "LG OLED TV delivers deep blacks, vibrant colours "
                 "and an immersive home entertainment experience."
@@ -154,7 +178,9 @@ class Command(BaseCommand):
             "name": "Sony Bravia 55-inch TV",
             "category": "Televisions",
             "price": Decimal("980000"),
-            "short_description": "Sony Bravia smart television.",
+            "short_description": (
+                "Sony Bravia smart television."
+            ),
             "description": (
                 "Sony Bravia television with excellent picture quality, "
                 "smart features and premium sound support."
@@ -164,7 +190,9 @@ class Command(BaseCommand):
             "name": "Apple AirPods Pro",
             "category": "Audio",
             "price": Decimal("390000"),
-            "short_description": "Premium wireless earbuds with noise cancellation.",
+            "short_description": (
+                "Premium wireless earbuds with noise cancellation."
+            ),
             "description": (
                 "Apple AirPods Pro provide immersive sound, active noise "
                 "cancellation and a compact wireless design."
@@ -174,7 +202,9 @@ class Command(BaseCommand):
             "name": "Sony WH-1000XM5",
             "category": "Audio",
             "price": Decimal("520000"),
-            "short_description": "Premium wireless noise-cancelling headphones.",
+            "short_description": (
+                "Premium wireless noise-cancelling headphones."
+            ),
             "description": (
                 "Sony WH-1000XM5 headphones provide high-quality sound "
                 "and advanced active noise cancellation."
@@ -184,7 +214,9 @@ class Command(BaseCommand):
             "name": "JBL Charge 5",
             "category": "Audio",
             "price": Decimal("210000"),
-            "short_description": "Portable JBL Bluetooth speaker.",
+            "short_description": (
+                "Portable JBL Bluetooth speaker."
+            ),
             "description": (
                 "JBL Charge 5 delivers powerful portable audio "
                 "with long battery life."
@@ -194,7 +226,9 @@ class Command(BaseCommand):
             "name": "Apple Watch Series 10",
             "category": "Wearables",
             "price": Decimal("520000"),
-            "short_description": "Modern Apple smartwatch.",
+            "short_description": (
+                "Modern Apple smartwatch."
+            ),
             "description": (
                 "Apple Watch Series 10 combines health, fitness, "
                 "communication and smart features."
@@ -204,7 +238,9 @@ class Command(BaseCommand):
             "name": "Samsung Galaxy Watch 7",
             "category": "Wearables",
             "price": Decimal("390000"),
-            "short_description": "Samsung smartwatch with health tracking.",
+            "short_description": (
+                "Samsung smartwatch with health tracking."
+            ),
             "description": (
                 "Galaxy Watch 7 provides fitness tracking, notifications, "
                 "health monitoring and smart functionality."
@@ -214,7 +250,9 @@ class Command(BaseCommand):
             "name": "Nike Air Max",
             "category": "Shoes",
             "price": Decimal("180000"),
-            "short_description": "Comfortable Nike lifestyle sneakers.",
+            "short_description": (
+                "Comfortable Nike lifestyle sneakers."
+            ),
             "description": (
                 "Nike Air Max sneakers designed for everyday comfort, "
                 "style and casual activities."
@@ -224,7 +262,9 @@ class Command(BaseCommand):
             "name": "Adidas Ultraboost",
             "category": "Shoes",
             "price": Decimal("210000"),
-            "short_description": "Performance running shoes from Adidas.",
+            "short_description": (
+                "Performance running shoes from Adidas."
+            ),
             "description": (
                 "Adidas Ultraboost running shoes designed for responsive "
                 "cushioning and everyday running."
@@ -234,7 +274,9 @@ class Command(BaseCommand):
             "name": "PlayStation 5 Slim",
             "category": "Gaming",
             "price": Decimal("850000"),
-            "short_description": "Sony PlayStation 5 Slim gaming console.",
+            "short_description": (
+                "Sony PlayStation 5 Slim gaming console."
+            ),
             "description": (
                 "PlayStation 5 Slim delivers next-generation gaming "
                 "performance with a compact console design."
@@ -244,7 +286,9 @@ class Command(BaseCommand):
             "name": "Xbox Series X",
             "category": "Gaming",
             "price": Decimal("780000"),
-            "short_description": "Microsoft Xbox Series X console.",
+            "short_description": (
+                "Microsoft Xbox Series X console."
+            ),
             "description": (
                 "Xbox Series X provides high-performance gaming, "
                 "fast loading and 4K gaming capabilities."
@@ -254,7 +298,9 @@ class Command(BaseCommand):
             "name": "Nintendo Switch OLED",
             "category": "Gaming",
             "price": Decimal("480000"),
-            "short_description": "Nintendo hybrid gaming console.",
+            "short_description": (
+                "Nintendo hybrid gaming console."
+            ),
             "description": (
                 "Nintendo Switch OLED supports handheld, tabletop "
                 "and television gaming."
@@ -267,82 +313,126 @@ class Command(BaseCommand):
             "name": "USB-C Fast Charging Cable",
             "category": "Accessories",
             "price": Decimal("15000"),
-            "short_description": "Durable USB-C fast charging cable.",
-            "description": "High-quality USB-C cable suitable for charging and data transfer.",
+            "short_description": (
+                "Durable USB-C fast charging cable."
+            ),
+            "description": (
+                "High-quality USB-C cable suitable for charging "
+                "and data transfer."
+            ),
         },
         {
             "name": "65W USB-C Charger",
             "category": "Accessories",
             "price": Decimal("35000"),
-            "short_description": "Compact 65W USB-C power adapter.",
-            "description": "Fast USB-C charger suitable for phones, tablets and compatible laptops.",
+            "short_description": (
+                "Compact 65W USB-C power adapter."
+            ),
+            "description": (
+                "Fast USB-C charger suitable for phones, tablets "
+                "and compatible laptops."
+            ),
         },
         {
             "name": "Wireless Mouse",
             "category": "Computer Accessories",
             "price": Decimal("22000"),
-            "short_description": "Comfortable wireless computer mouse.",
-            "description": "Reliable wireless mouse for office, school and home computing.",
+            "short_description": (
+                "Comfortable wireless computer mouse."
+            ),
+            "description": (
+                "Reliable wireless mouse for office, school "
+                "and home computing."
+            ),
         },
         {
             "name": "Laptop Backpack",
             "category": "Bags",
             "price": Decimal("45000"),
-            "short_description": "Protective laptop backpack.",
-            "description": "Spacious laptop backpack with multiple compartments.",
+            "short_description": (
+                "Protective laptop backpack."
+            ),
+            "description": (
+                "Spacious laptop backpack with multiple compartments."
+            ),
         },
         {
             "name": "Power Bank 20000mAh",
             "category": "Accessories",
             "price": Decimal("50000"),
-            "short_description": "High-capacity portable power bank.",
-            "description": "20,000mAh portable battery for charging compatible devices on the go.",
+            "short_description": (
+                "High-capacity portable power bank."
+            ),
+            "description": (
+                "20,000mAh portable battery for charging compatible "
+                "devices on the go."
+            ),
         },
         {
             "name": "Tempered Glass Screen Protector",
             "category": "Accessories",
             "price": Decimal("10000"),
-            "short_description": "Protective tempered glass screen protector.",
-            "description": "Durable tempered glass designed to protect smartphone displays.",
+            "short_description": (
+                "Protective tempered glass screen protector."
+            ),
+            "description": (
+                "Durable tempered glass designed to protect "
+                "smartphone displays."
+            ),
         },
         {
             "name": "Bluetooth USB Adapter",
             "category": "Computer Accessories",
             "price": Decimal("12000"),
-            "short_description": "Compact Bluetooth adapter for computers.",
-            "description": "USB Bluetooth adapter for connecting compatible wireless devices.",
+            "short_description": (
+                "Compact Bluetooth adapter for computers."
+            ),
+            "description": (
+                "USB Bluetooth adapter for connecting compatible "
+                "wireless devices."
+            ),
         },
         {
             "name": "HDMI Cable",
             "category": "Computer Accessories",
             "price": Decimal("10000"),
-            "short_description": "High-speed HDMI cable.",
-            "description": "HDMI cable suitable for televisions, monitors, consoles and computers.",
+            "short_description": (
+                "High-speed HDMI cable."
+            ),
+            "description": (
+                "HDMI cable suitable for televisions, monitors, "
+                "consoles and computers."
+            ),
         },
         {
             "name": "Laptop Stand",
             "category": "Computer Accessories",
             "price": Decimal("30000"),
-            "short_description": "Adjustable ergonomic laptop stand.",
-            "description": "Adjustable stand designed to improve laptop viewing height and ergonomics.",
+            "short_description": (
+                "Adjustable ergonomic laptop stand."
+            ),
+            "description": (
+                "Adjustable stand designed to improve laptop viewing "
+                "height and ergonomics."
+            ),
         },
         {
             "name": "Smartphone Tripod",
             "category": "Accessories",
             "price": Decimal("28000"),
-            "short_description": "Adjustable smartphone tripod.",
-            "description": "Compact tripod for photography, video recording and online meetings.",
+            "short_description": (
+                "Adjustable smartphone tripod."
+            ),
+            "description": (
+                "Compact tripod for photography, video recording "
+                "and online meetings."
+            ),
         },
     ]
 
-    # ---------------------------------------------------------
+    # =========================================================
     # CATEGORY OPTIONS
-    # ---------------------------------------------------------
-    #
-    # These are created as CategoryOption records and then
-    # copied to ProductOption for each variant product.
-    #
-    # ---------------------------------------------------------
+    # =========================================================
 
     CATEGORY_OPTIONS = {
         "Smartphones": {
@@ -424,23 +514,23 @@ class Command(BaseCommand):
         },
     }
 
-    # ---------------------------------------------------------
+    # =========================================================
     # STORE OPERATING HOURS
-    # ---------------------------------------------------------
+    # =========================================================
 
     STORE_HOURS = {
-        0: (time(8, 0), time(18, 0)),   # Monday
-        1: (time(8, 0), time(18, 0)),   # Tuesday
-        2: (time(8, 0), time(18, 0)),   # Wednesday
-        3: (time(8, 0), time(18, 0)),   # Thursday
-        4: (time(8, 0), time(18, 0)),   # Friday
-        5: (time(9, 0), time(17, 0)),   # Saturday
-        6: (None, None),                # Sunday
+        0: (time(8, 0), time(18, 0)),
+        1: (time(8, 0), time(18, 0)),
+        2: (time(8, 0), time(18, 0)),
+        3: (time(8, 0), time(18, 0)),
+        4: (time(8, 0), time(18, 0)),
+        5: (time(9, 0), time(17, 0)),
+        6: (None, None),
     }
 
-    # ---------------------------------------------------------
-    # COLORS USED FOR GENERATED SVG IMAGES
-    # ---------------------------------------------------------
+    # =========================================================
+    # GENERATED IMAGE BACKGROUNDS
+    # =========================================================
 
     IMAGE_BACKGROUNDS = [
         "#F4F4F5",
@@ -452,15 +542,18 @@ class Command(BaseCommand):
         "#EDE9FE",
     ]
 
-    # ---------------------------------------------------------
-    # COMMAND
-    # ---------------------------------------------------------
+    # =========================================================
+    # COMMAND ARGUMENTS
+    # =========================================================
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--overwrite",
             action="store_true",
-            help="Delete existing mock products before creating them.",
+            help=(
+                "Delete existing MOCK products and their Cloudinary "
+                "images before creating them."
+            ),
         )
 
         parser.add_argument(
@@ -482,9 +575,9 @@ class Command(BaseCommand):
             ),
         )
 
-    # ---------------------------------------------------------
+    # =========================================================
     # HANDLE
-    # ---------------------------------------------------------
+    # =========================================================
 
     def handle(self, *args, **options):
         self.random = random.Random(self.RANDOM_SEED)
@@ -492,6 +585,11 @@ class Command(BaseCommand):
         overwrite = options["overwrite"]
         all_vendors = options["all_vendors"]
         stores_per_vendor = options["stores_per_vendor"]
+
+        if stores_per_vendor is not None and stores_per_vendor <= 0:
+            raise ValueError(
+                "--stores-per-vendor must be greater than zero."
+            )
 
         self.stdout.write("")
         self.stdout.write(
@@ -501,24 +599,28 @@ class Command(BaseCommand):
         )
         self.stdout.write("")
 
-        if len(self.VARIANT_PRODUCTS) != self.DEFAULT_VARIANT_PRODUCTS:
-            raise ValueError(
-                f"Expected {self.DEFAULT_VARIANT_PRODUCTS} variant "
-                f"product definitions, found {len(self.VARIANT_PRODUCTS)}."
-            )
+        self.validate_configuration()
 
-        if len(self.NON_VARIANT_PRODUCTS) != self.DEFAULT_NON_VARIANT_PRODUCTS:
-            raise ValueError(
-                f"Expected {self.DEFAULT_NON_VARIANT_PRODUCTS} non-variant "
-                f"product definitions, found {len(self.NON_VARIANT_PRODUCTS)}."
-            )
+        # -----------------------------------------------------
+        # OVERWRITE
+        # -----------------------------------------------------
 
         if overwrite:
             self.delete_mock_products()
 
+        # -----------------------------------------------------
+        # CATEGORIES
+        # -----------------------------------------------------
+
         categories = self.create_categories()
 
-        vendors = self.get_vendors(all_vendors=all_vendors)
+        # -----------------------------------------------------
+        # VENDORS
+        # -----------------------------------------------------
+
+        vendors = self.get_vendors(
+            all_vendors=all_vendors
+        )
 
         if not vendors.exists():
             self.stdout.write(
@@ -528,20 +630,27 @@ class Command(BaseCommand):
             )
             return
 
+        # -----------------------------------------------------
+        # COUNTERS
+        # -----------------------------------------------------
+
         total_products = 0
         total_variants = 0
         total_images = 0
         total_stores = 0
 
+        # -----------------------------------------------------
+        # PROCESS VENDORS
+        # -----------------------------------------------------
+
         for vendor in vendors:
-            stores = vendor.stores.all().order_by("created_at")
+            stores = (
+                vendor.stores
+                .all()
+                .order_by("created_at")
+            )
 
             if stores_per_vendor is not None:
-                if stores_per_vendor <= 0:
-                    raise ValueError(
-                        "--stores-per-vendor must be greater than zero."
-                    )
-
                 stores = stores[:stores_per_vendor]
 
             vendor_store_count = stores.count()
@@ -563,12 +672,14 @@ class Command(BaseCommand):
             )
 
             for store in stores:
-                products_created, variants_created, images_created = (
-                    self.create_products_for_store(
-                        vendor=vendor,
-                        store=store,
-                        categories=categories,
-                    )
+                (
+                    products_created,
+                    variants_created,
+                    images_created,
+                ) = self.create_products_for_store(
+                    vendor=vendor,
+                    store=store,
+                    categories=categories,
                 )
 
                 self.create_store_operating_hours(store)
@@ -578,32 +689,86 @@ class Command(BaseCommand):
                 total_images += images_created
                 total_stores += 1
 
+        # -----------------------------------------------------
+        # SUMMARY
+        # -----------------------------------------------------
+
         self.stdout.write("")
         self.stdout.write("=" * 70)
+
         self.stdout.write(
             self.style.SUCCESS(
                 "MOCK PRODUCT GENERATION COMPLETED"
             )
         )
+
         self.stdout.write("=" * 70)
+
         self.stdout.write(
             f"Stores processed:       {total_stores}"
         )
+
         self.stdout.write(
             f"Products created:       {total_products}"
         )
+
         self.stdout.write(
             f"Variants created:       {total_variants}"
         )
+
         self.stdout.write(
             f"Variant images created: {total_images}"
         )
+
         self.stdout.write("=" * 70)
         self.stdout.write("")
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # VALIDATE CONFIGURATION
+    # =========================================================
+
+    def validate_configuration(self):
+        if len(self.VARIANT_PRODUCTS) != self.DEFAULT_VARIANT_PRODUCTS:
+            raise ValueError(
+                f"Expected {self.DEFAULT_VARIANT_PRODUCTS} variant "
+                f"product definitions, found "
+                f"{len(self.VARIANT_PRODUCTS)}."
+            )
+
+        if len(self.NON_VARIANT_PRODUCTS) != (
+            self.DEFAULT_NON_VARIANT_PRODUCTS
+        ):
+            raise ValueError(
+                f"Expected {self.DEFAULT_NON_VARIANT_PRODUCTS} "
+                f"non-variant product definitions, found "
+                f"{len(self.NON_VARIANT_PRODUCTS)}."
+            )
+
+        if self.IMAGES_PER_VARIANT <= 0:
+            raise ValueError(
+                "IMAGES_PER_VARIANT must be greater than zero."
+            )
+
+        if self.VARIANTS_PER_PRODUCT <= 0:
+            raise ValueError(
+                "VARIANTS_PER_PRODUCT must be greater than zero."
+            )
+
+        if self.CLOUDINARY_WORKERS <= 0:
+            raise ValueError(
+                "CLOUDINARY_WORKERS must be greater than zero."
+            )
+
+        if self.VARIANTS_PER_PRODUCT > 6:
+            raise ValueError(
+                "This command currently defines only six price "
+                "adjustments. Increase the price adjustment list "
+                "before increasing VARIANTS_PER_PRODUCT."
+            )
+
+    # =========================================================
     # VENDORS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def get_vendors(self, all_vendors=False):
         queryset = (
@@ -620,39 +785,111 @@ class Command(BaseCommand):
 
         return queryset
 
-    # ---------------------------------------------------------
+    # =========================================================
     # DELETE MOCK PRODUCTS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def delete_mock_products(self):
+        """
+        Delete existing mock products and remove their Cloudinary
+        assets first.
+
+        This prevents the database from being cleaned while leaving
+        hundreds or thousands of orphaned Cloudinary assets.
+        """
+
         self.stdout.write(
             self.style.WARNING(
-                "Deleting existing mock products..."
+                "Deleting existing mock products and their images..."
             )
         )
 
-        deleted_count, _ = Product.objects.filter(
+        products = Product.objects.filter(
             sku__startswith="MOCK-"
-        ).delete()
+        ).prefetch_related(
+            "variants__images"
+        )
+
+        image_public_ids = []
+
+        # -----------------------------------------------------
+        # COLLECT CLOUDINARY ASSETS
+        # -----------------------------------------------------
+
+        for product in products:
+            for variant in product.variants.all():
+                for image in variant.images.all():
+                    if image.image:
+                        public_id = str(image.image)
+
+                        if public_id:
+                            image_public_ids.append(
+                                public_id
+                            )
+
+        # -----------------------------------------------------
+        # DELETE CLOUDINARY ASSETS
+        # -----------------------------------------------------
+
+        deleted_cloudinary = 0
+
+        for public_id in image_public_ids:
+            try:
+                result = cloudinary.uploader.destroy(
+                    public_id,
+                    resource_type="image",
+                )
+
+                if result.get("result") in (
+                    "ok",
+                    "not found",
+                ):
+                    deleted_cloudinary += 1
+
+            except Exception as exc:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Could not delete Cloudinary asset "
+                        f"'{public_id}': {exc}"
+                    )
+                )
+
+        # -----------------------------------------------------
+        # DELETE DATABASE RECORDS
+        # -----------------------------------------------------
+
+        deleted_count, _ = products.delete()
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Deleted {deleted_count} mock product-related records."
+                f"Deleted {deleted_count} mock-related database "
+                "records."
             )
         )
 
-    # ---------------------------------------------------------
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Cloudinary assets processed: "
+                f"{deleted_cloudinary}/{len(image_public_ids)}"
+            )
+        )
+
+    # =========================================================
     # CATEGORIES
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_categories(self):
         category_names = set()
 
         for item in self.VARIANT_PRODUCTS:
-            category_names.add(item["category"])
+            category_names.add(
+                item["category"]
+            )
 
         for item in self.NON_VARIANT_PRODUCTS:
-            category_names.add(item["category"])
+            category_names.add(
+                item["category"]
+            )
 
         categories = {}
 
@@ -660,36 +897,54 @@ class Command(BaseCommand):
             sorted(category_names),
             start=1,
         ):
-            category, _ = ProductCategory.objects.get_or_create(
-                slug=slugify(category_name),
-                defaults={
-                    "name": category_name,
-                    "description": (
-                        f"Mock product category for {category_name}."
-                    ),
-                    "sort_order": sort_order,
-                    "is_active": True,
-                },
+            category, _ = (
+                ProductCategory.objects.get_or_create(
+                    slug=slugify(category_name),
+                    defaults={
+                        "name": category_name,
+                        "description": (
+                            f"Mock product category for "
+                            f"{category_name}."
+                        ),
+                        "sort_order": sort_order,
+                        "is_active": True,
+                    },
+                )
             )
 
-            # Update the name if the category already exists.
-            changed = False
+            updates = []
 
             if category.name != category_name:
                 category.name = category_name
-                changed = True
+                updates.append("name")
+
+            if category.description != (
+                f"Mock product category for {category_name}."
+            ):
+                category.description = (
+                    f"Mock product category for {category_name}."
+                )
+                updates.append("description")
+
+            if category.sort_order != sort_order:
+                category.sort_order = sort_order
+                updates.append("sort_order")
 
             if not category.is_active:
                 category.is_active = True
-                changed = True
+                updates.append("is_active")
 
-            if changed:
-                category.save()
+            if updates:
+                category.save(
+                    update_fields=updates
+                )
 
             categories[category_name] = category
 
-            # Create CategoryOption records for categories that
-            # support variants.
+            # -------------------------------------------------
+            # CATEGORY OPTIONS
+            # -------------------------------------------------
+
             category_options = self.CATEGORY_OPTIONS.get(
                 category_name,
                 {},
@@ -711,22 +966,28 @@ class Command(BaseCommand):
                     )
                 )
 
-                changed = False
+                updates = []
 
                 if category_option.name != option_name:
                     category_option.name = option_name
-                    changed = True
+                    updates.append("name")
 
-                if category_option.sort_order != option_sort_order:
-                    category_option.sort_order = option_sort_order
-                    changed = True
+                if category_option.sort_order != (
+                    option_sort_order
+                ):
+                    category_option.sort_order = (
+                        option_sort_order
+                    )
+                    updates.append("sort_order")
 
                 if not category_option.is_active:
                     category_option.is_active = True
-                    changed = True
+                    updates.append("is_active")
 
-                if changed:
-                    category_option.save()
+                if updates:
+                    category_option.save(
+                        update_fields=updates
+                    )
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -736,9 +997,9 @@ class Command(BaseCommand):
 
         return categories
 
-    # ---------------------------------------------------------
+    # =========================================================
     # CREATE PRODUCTS FOR STORE
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_products_for_store(
         self,
@@ -754,66 +1015,78 @@ class Command(BaseCommand):
         variants_created = 0
         images_created = 0
 
-        # -----------------------------------------------------
+        # =====================================================
         # VARIANT PRODUCTS
-        # -----------------------------------------------------
+        # =====================================================
 
         for index, definition in enumerate(
             self.VARIANT_PRODUCTS,
             start=1,
         ):
-            product_result = self.create_product(
+            result = self.create_product(
                 vendor=vendor,
                 store=store,
-                category=categories[definition["category"]],
+                category=categories[
+                    definition["category"]
+                ],
                 definition=definition,
                 product_number=index,
                 is_variant_product=True,
             )
 
-            if product_result is None:
+            if result is None:
                 continue
 
-            product_created, product_variant_count, image_count = (
-                product_result
-            )
+            (
+                product_created,
+                variant_count,
+                image_count,
+            ) = result
 
             if product_created:
                 products_created += 1
 
-            variants_created += product_variant_count
+            variants_created += variant_count
             images_created += image_count
 
-        # -----------------------------------------------------
+        # =====================================================
         # NON-VARIANT PRODUCTS
-        # -----------------------------------------------------
+        # =====================================================
 
-        non_variant_start = len(self.VARIANT_PRODUCTS) + 1
+        non_variant_start = (
+            len(self.VARIANT_PRODUCTS) + 1
+        )
 
         for offset, definition in enumerate(
             self.NON_VARIANT_PRODUCTS,
             start=0,
         ):
-            product_result = self.create_product(
+            result = self.create_product(
                 vendor=vendor,
                 store=store,
-                category=categories[definition["category"]],
+                category=categories[
+                    definition["category"]
+                ],
                 definition=definition,
-                product_number=non_variant_start + offset,
+                product_number=(
+                    non_variant_start + offset
+                ),
                 is_variant_product=False,
             )
 
-            if product_result is None:
+            if result is None:
                 continue
 
-            product_created, product_variant_count, image_count = (
-                product_result
-            )
+            (
+                product_created,
+                variant_count,
+                image_count,
+            ) = result
 
             if product_created:
                 products_created += 1
 
-            variants_created += product_variant_count
+            variants_created += variant_count
             images_created += image_count
 
         self.stdout.write(
@@ -830,9 +1103,9 @@ class Command(BaseCommand):
             images_created,
         )
 
-    # ---------------------------------------------------------
+    # =========================================================
     # CREATE PRODUCT
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_product(
         self,
@@ -851,26 +1124,35 @@ class Command(BaseCommand):
 
         product_sku = (
             f"MOCK-"
-            f"{vendor.id.hex[:8].upper()}-"
-            f"{store.id.hex[:8].upper()}-"
+            f"{str(vendor.id).replace('-', '')[:8].upper()}-"
+            f"{str(store.id).replace('-', '')[:8].upper()}-"
             f"P{product_number:02d}"
         )
 
         # -----------------------------------------------------
-        # IDPOTENCY
-        # -----------------------------------------------------
-        #
-        # If the product already exists, do not duplicate it.
-        #
+        # IDEMPOTENCY
         # -----------------------------------------------------
 
-        existing_product = Product.objects.filter(
-            vendor=vendor,
-            sku=product_sku,
-        ).first()
+        existing_product = (
+            Product.objects
+            .filter(
+                vendor=vendor,
+                sku=product_sku,
+            )
+            .first()
+        )
 
         if existing_product:
-            return None
+            return self.reconcile_existing_product(
+                product=existing_product,
+                category=category,
+                definition=definition,
+                is_variant_product=is_variant_product,
+            )
+
+        # -----------------------------------------------------
+        # PRICE
+        # -----------------------------------------------------
 
         compare_at_price = (
             definition["price"] * Decimal("1.15")
@@ -878,46 +1160,53 @@ class Command(BaseCommand):
             Decimal("0.01")
         )
 
-        with transaction.atomic():
-            product = Product.objects.create(
-                vendor=vendor,
-                store=store,
-                category=category,
-                name=product_name,
-                slug=product_slug,
-                sku=product_sku,
-                short_description=definition[
-                    "short_description"
-                ],
-                description=definition[
-                    "description"
-                ],
-                price=definition["price"],
-                compare_at_price=compare_at_price,
-                stock_quantity=self.random.randint(
-                    10,
-                    100,
-                ),
-                track_inventory=True,
-                is_active=True,
-                is_published=True,
-                is_featured=(
-                    product_number <= 5
-                ),
-                sort_order=product_number,
-            )
+        # -----------------------------------------------------
+        # DATABASE CREATION
+        # -----------------------------------------------------
 
-            if is_variant_product:
-                variant_count, image_count = (
-                    self.create_product_variants(
+        try:
+            with transaction.atomic():
+                product = Product.objects.create(
+                    vendor=vendor,
+                    store=store,
+                    category=category,
+                    name=product_name,
+                    slug=product_slug,
+                    sku=product_sku,
+                    short_description=(
+                        definition["short_description"]
+                    ),
+                    description=definition["description"],
+                    price=definition["price"],
+                    compare_at_price=compare_at_price,
+                    stock_quantity=self.random.randint(
+                        10,
+                        100,
+                    ),
+                    track_inventory=True,
+                    is_active=True,
+                    is_published=True,
+                    is_featured=(
+                        product_number <= 5
+                    ),
+                    sort_order=product_number,
+                )
+
+                if is_variant_product:
+                    (
+                        variant_count,
+                        image_count,
+                    ) = self.create_product_variants(
                         product=product,
                         category=category,
                         product_number=product_number,
                     )
-                )
-            else:
-                variant_count = 0
-                image_count = 0
+                else:
+                    variant_count = 0
+                    image_count = 0
+
+        except Exception:
+            raise
 
         return (
             True,
@@ -925,52 +1214,147 @@ class Command(BaseCommand):
             image_count,
         )
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # RECONCILE EXISTING PRODUCT
+    # =========================================================
+
+    def reconcile_existing_product(
+        self,
+        product,
+        category,
+        definition,
+        is_variant_product,
+    ):
+        """
+        Repair an existing mock product rather than simply skipping it.
+
+        This makes repeated executions idempotent and allows a partially
+        generated product to be completed.
+        """
+
+        variant_count = 0
+        image_count = 0
+
+        # -----------------------------------------------------
+        # UPDATE PRODUCT FIELDS
+        # -----------------------------------------------------
+
+        compare_at_price = (
+            definition["price"] * Decimal("1.15")
+        ).quantize(
+            Decimal("0.01")
+        )
+
+        updates = []
+
+        desired_values = {
+            "category": category,
+            "name": definition["name"],
+            "short_description": (
+                definition["short_description"]
+            ),
+            "description": definition["description"],
+            "price": definition["price"],
+            "compare_at_price": compare_at_price,
+            "track_inventory": True,
+            "is_active": True,
+            "is_published": True,
+        }
+
+        for field, value in desired_values.items():
+            if getattr(product, field) != value:
+                setattr(product, field, value)
+                updates.append(field)
+
+        if updates:
+            product.save(
+                update_fields=updates
+            )
+
+        # -----------------------------------------------------
+        # VARIANT PRODUCT REPAIR
+        # -----------------------------------------------------
+
+        if is_variant_product:
+            (
+                variant_count,
+                image_count,
+            ) = self.ensure_product_variants(
+                product=product,
+                category=category,
+            )
+
+        return (
+            False,
+            variant_count,
+            image_count,
+        )
+
+    # =========================================================
     # CREATE PRODUCT OPTIONS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_product_options(
         self,
         product,
         category,
     ):
-        category_option_queryset = (
+        category_options = list(
             category.category_options
-            .filter(is_active=True)
-            .order_by("sort_order", "created_at")
+            .filter(
+                is_active=True
+            )
+            .order_by(
+                "sort_order",
+                "created_at",
+            )
         )
 
         product_options = []
 
-        for category_option in category_option_queryset:
-            option, _ = ProductOption.objects.get_or_create(
-                product=product,
-                slug=category_option.slug,
-                defaults={
-                    "name": category_option.name,
-                    "sort_order": category_option.sort_order,
-                    "is_active": True,
-                },
+        for category_option in category_options:
+            option, _ = (
+                ProductOption.objects.get_or_create(
+                    product=product,
+                    slug=category_option.slug,
+                    defaults={
+                        "name": category_option.name,
+                        "sort_order": (
+                            category_option.sort_order
+                        ),
+                        "is_active": True,
+                    },
+                )
             )
 
-            changed = False
+            updates = []
 
             if option.name != category_option.name:
                 option.name = category_option.name
-                changed = True
+                updates.append("name")
 
-            if option.sort_order != category_option.sort_order:
-                option.sort_order = category_option.sort_order
-                changed = True
+            if option.sort_order != (
+                category_option.sort_order
+            ):
+                option.sort_order = (
+                    category_option.sort_order
+                )
+                updates.append("sort_order")
 
             if not option.is_active:
                 option.is_active = True
-                changed = True
+                updates.append("is_active")
 
-            if changed:
-                option.save()
+            if updates:
+                option.save(
+                    update_fields=updates
+                )
 
             product_options.append(option)
+
+            # -------------------------------------------------
+            # OPTION VALUES
+            # -------------------------------------------------
 
             values = self.CATEGORY_OPTIONS.get(
                 category.name,
@@ -984,21 +1368,75 @@ class Command(BaseCommand):
                 values,
                 start=1,
             ):
-                ProductOptionValue.objects.get_or_create(
-                    option=option,
-                    slug=slugify(value_name),
-                    defaults={
-                        "name": value_name,
-                        "sort_order": value_sort_order,
-                        "is_active": True,
-                    },
+                value, _ = (
+                    ProductOptionValue.objects.get_or_create(
+                        option=option,
+                        slug=slugify(value_name),
+                        defaults={
+                            "name": value_name,
+                            "sort_order": value_sort_order,
+                            "is_active": True,
+                        },
+                    )
                 )
+
+                updates = []
+
+                if value.name != value_name:
+                    value.name = value_name
+                    updates.append("name")
+
+                if value.sort_order != value_sort_order:
+                    value.sort_order = value_sort_order
+                    updates.append("sort_order")
+
+                if not value.is_active:
+                    value.is_active = True
+                    updates.append("is_active")
+
+                if updates:
+                    value.save(
+                        update_fields=updates
+                    )
 
         return product_options
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # ENSURE PRODUCT VARIANTS
+    # =========================================================
+
+    def ensure_product_variants(
+        self,
+        product,
+        category,
+    ):
+        """
+        Ensure an existing product has the expected variant structure.
+
+        Existing valid variants are retained.
+
+        If no variants exist, the complete variant set is generated.
+        """
+
+        existing_variants = list(
+            product.variants.all()
+        )
+
+        if existing_variants:
+            return self.reconcile_variant_images(
+                product=product,
+                variants=existing_variants,
+            )
+
+        return self.create_product_variants(
+            product=product,
+            category=category,
+            product_number=product.sort_order,
+        )
+
+    # =========================================================
     # CREATE VARIANTS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_product_variants(
         self,
@@ -1011,16 +1449,19 @@ class Command(BaseCommand):
             category=category,
         )
 
+        # -----------------------------------------------------
+        # REQUIRE AT LEAST TWO OPTIONS
+        # -----------------------------------------------------
+
         if len(product_options) < 2:
             raise ValueError(
-                f"Variant product '{product.name}' must have at "
-                f"least two ProductOptions. "
-                f"Category '{category.name}' only has "
-                f"{len(product_options)}."
+                f"Variant product '{product.name}' must have at least "
+                f"two ProductOptions. Category '{category.name}' only "
+                f"has {len(product_options)}."
             )
 
         # -----------------------------------------------------
-        # Get values for each product option
+        # GET OPTION VALUES
         # -----------------------------------------------------
 
         option_values = []
@@ -1042,28 +1483,38 @@ class Command(BaseCommand):
             option_values.append(values)
 
         # -----------------------------------------------------
-        # Create combinations.
-        #
-        # For two options with three values each:
-        #
-        #   3 × 3 = 9 combinations
-        #
-        # We only create the first six combinations because
-        # the requirement is six variants per variant product.
+        # COMBINATIONS
         # -----------------------------------------------------
 
         combinations = list(
             cartesian_product(*option_values)
-        )[: self.VARIANTS_PER_PRODUCT]
+        )[:self.VARIANTS_PER_PRODUCT]
 
         if len(combinations) != self.VARIANTS_PER_PRODUCT:
             raise ValueError(
-                f"Unable to create {self.VARIANTS_PER_PRODUCT} "
-                f"variants for '{product.name}'."
+                f"Unable to create "
+                f"{self.VARIANTS_PER_PRODUCT} variants for "
+                f"'{product.name}'."
             )
 
-        variant_count = 0
-        image_count = 0
+        # -----------------------------------------------------
+        # PRICE ADJUSTMENTS
+        # -----------------------------------------------------
+
+        price_adjustments = [
+            Decimal("0"),
+            Decimal("5000"),
+            Decimal("10000"),
+            Decimal("15000"),
+            Decimal("20000"),
+            Decimal("25000"),
+        ]
+
+        # -----------------------------------------------------
+        # PREPARE VARIANTS
+        # -----------------------------------------------------
+
+        variants = []
 
         for variant_index, selected_values in enumerate(
             combinations,
@@ -1074,303 +1525,807 @@ class Command(BaseCommand):
                 for value in selected_values
             ]
 
-            variant_name = " / ".join(value_names)
+            variant_name = " / ".join(
+                value_names
+            )
 
             variant_sku = (
                 f"{product.sku}-"
                 f"V{variant_index:02d}"
             )
 
-            base_price = product.price
-
-            # Give different combinations slightly different
-            # prices while keeping them deterministic.
-            price_adjustments = [
-                Decimal("0"),
-                Decimal("5000"),
-                Decimal("10000"),
-                Decimal("15000"),
-                Decimal("20000"),
-                Decimal("25000"),
-            ]
-
             variant_price = (
-                base_price
+                product.price
                 + price_adjustments[
                     variant_index - 1
                 ]
             )
 
             variant_compare_at_price = (
-                variant_price
-                * Decimal("1.15")
+                variant_price * Decimal("1.15")
             ).quantize(
                 Decimal("0.01")
             )
 
-            variant = ProductVariant.objects.create(
-                product=product,
-                name=variant_name,
-                sku=variant_sku,
-                price=variant_price,
-                compare_at_price=variant_compare_at_price,
-                stock_quantity=self.random.randint(
-                    5,
-                    50,
-                ),
-                track_inventory=True,
-                weight=Decimal(
-                    str(
-                        self.random.randint(
-                            200,
-                            2500,
+            variants.append(
+                ProductVariant(
+                    product=product,
+                    name=variant_name,
+                    sku=variant_sku,
+                    price=variant_price,
+                    compare_at_price=(
+                        variant_compare_at_price
+                    ),
+                    stock_quantity=self.random.randint(
+                        5,
+                        50,
+                    ),
+                    track_inventory=True,
+                    weight=Decimal(
+                        str(
+                            self.random.randint(
+                                200,
+                                2500,
+                            )
                         )
-                    )
-                ),
-                is_active=True,
-                is_default=(
-                    variant_index == 1
-                ),
-                is_available=True,
-                sort_order=variant_index,
+                    ),
+                    is_active=True,
+                    is_default=(
+                        variant_index == 1
+                    ),
+                    is_available=True,
+                    sort_order=variant_index,
+                )
             )
 
-            # -------------------------------------------------
-            # Attach ProductOptionValue records to the variant
-            # through ProductVariantOptionValue.
-            # -------------------------------------------------
+        # -----------------------------------------------------
+        # DATABASE TRANSACTION
+        # -----------------------------------------------------
 
-            for selected_value in selected_values:
-                ProductVariantOptionValue.objects.create(
-                    variant=variant,
-                    option_value=selected_value,
+        uploaded_results = {}
+
+        try:
+            with transaction.atomic():
+
+                ProductVariant.objects.bulk_create(
+                    variants,
+                    batch_size=100,
                 )
 
-            # -------------------------------------------------
-            # Create actual image content.
-            #
-            # This is a generated SVG image uploaded through
-            # your CloudinaryField.
-            # -------------------------------------------------
+                # -------------------------------------------------
+                # VARIANT OPTION RELATIONSHIPS
+                # -------------------------------------------------
 
-            image = self.create_variant_image(
-                variant=variant,
-                product_name=product.name,
-                variant_name=variant_name,
-                variant_index=variant_index,
+                variant_option_values = []
+
+                for variant, selected_values in zip(
+                    variants,
+                    combinations,
+                ):
+                    for selected_value in selected_values:
+                        variant_option_values.append(
+                            ProductVariantOptionValue(
+                                variant=variant,
+                                option_value=selected_value,
+                            )
+                        )
+
+                ProductVariantOptionValue.objects.bulk_create(
+                    variant_option_values,
+                    batch_size=500,
+                )
+
+                # -------------------------------------------------
+                # PREPARE IMAGE JOBS
+                # -------------------------------------------------
+
+                image_jobs = (
+                    self.prepare_image_jobs(
+                        product=product,
+                        variants=variants,
+                        combinations=combinations,
+                    )
+                )
+
+                # -------------------------------------------------
+                # CLOUDINARY UPLOAD
+                # -------------------------------------------------
+
+                uploaded_results = (
+                    self.upload_images_concurrently(
+                        image_jobs
+                    )
+                )
+
+                # -------------------------------------------------
+                # IMAGE DATABASE RECORDS
+                # -------------------------------------------------
+
+                image_records = []
+
+                for job in image_jobs:
+                    result = uploaded_results.get(
+                        job["public_id"]
+                    )
+
+                    if not result:
+                        raise RuntimeError(
+                            "Missing Cloudinary upload result "
+                            f"for '{job['public_id']}'."
+                        )
+
+                    cloudinary_public_id = result.get(
+                        "public_id"
+                    )
+
+                    if not cloudinary_public_id:
+                        raise RuntimeError(
+                            "Cloudinary upload succeeded but no "
+                            "public_id was returned for "
+                            f"'{job['public_id']}'."
+                        )
+
+                    image_records.append(
+                        ProductVariantImage(
+                            variant=job["variant"],
+                            image=cloudinary_public_id,
+                            alt_text=(
+                                f"{product.name} - "
+                                f"{job['variant_name']} - "
+                                f"Image {job['image_index']}"
+                            ),
+                            is_primary=(
+                                job["image_index"] == 1
+                            ),
+                            display_order=(
+                                job["image_index"]
+                            ),
+                            is_active=True,
+                        )
+                    )
+
+                # -------------------------------------------------
+                # BULK IMAGE INSERT
+                # -------------------------------------------------
+
+                ProductVariantImage.objects.bulk_create(
+                    image_records,
+                    batch_size=500,
+                )
+
+                # -------------------------------------------------
+                # SET PRIMARY IMAGE FIELD
+                # -------------------------------------------------
+
+                primary_images = {}
+
+                for image in image_records:
+                    if image.is_primary:
+                        primary_images[
+                            image.variant_id
+                        ] = image
+
+                for variant in variants:
+                    primary_image = primary_images.get(
+                        variant.id
+                    )
+
+                    if primary_image:
+                        variant.productvariantimage_id = (
+                            primary_image.pk
+                        )
+
+                # -------------------------------------------------
+                # UPDATE VARIANTS
+                # -------------------------------------------------
+
+                ProductVariant.objects.bulk_update(
+                    variants,
+                    [
+                        "productvariantimage",
+                        "updated_at",
+                    ],
+                    batch_size=100,
+                )
+
+        except Exception:
+            # -----------------------------------------------------
+            # IMPORTANT:
+            #
+            # Django rolls back the database transaction, but it
+            # cannot roll back Cloudinary.
+            #
+            # Therefore all successfully uploaded assets must be
+            # explicitly removed when database creation fails.
+            # -----------------------------------------------------
+
+            self.cleanup_uploaded_images(
+                uploaded_results
             )
 
-            # -------------------------------------------------
-            # ProductVariant.productvariantimage
-            #
-            # Your model has this exact field name.
-            # -------------------------------------------------
-
-            variant.productvariantimage = image
-
-            variant.save(
-                update_fields=[
-                    "productvariantimage",
-                    "updated_at",
-                ]
-            )
-
-            variant_count += 1
-            image_count += 1
+            raise
 
         return (
-            variant_count,
-            image_count,
+            len(variants),
+            len(image_records),
         )
 
-    # ---------------------------------------------------------
-    # CREATE CLOUDINARY IMAGE
-    # ---------------------------------------------------------
-    def create_variant_image(
+    # =========================================================
+    # PREPARE IMAGE JOBS
+    # =========================================================
+
+    def prepare_image_jobs(
         self,
-        variant,
+        product,
+        variants,
+        combinations,
+    ):
+        """
+        Prepare all SVG/image jobs before starting network uploads.
+        """
+
+        image_jobs = []
+
+        for variant_index, (
+            variant,
+            selected_values,
+        ) in enumerate(
+            zip(
+                variants,
+                combinations,
+            ),
+            start=1,
+        ):
+            variant_name = " / ".join(
+                value.name
+                for value in selected_values
+            )
+
+            for image_index in range(
+                1,
+                self.IMAGES_PER_VARIANT + 1,
+            ):
+                background = self.random.choice(
+                    self.IMAGE_BACKGROUNDS
+                )
+
+                svg = self.build_variant_svg(
+                    product_name=product.name,
+                    variant_name=variant_name,
+                    variant_index=variant_index,
+                    image_index=image_index,
+                    background=background,
+                )
+
+                public_id = (
+                    f"{self.CLOUDINARY_FOLDER}/"
+                    f"{product.id}/"
+                    f"variant-{variant.id}/"
+                    f"image-{image_index}"
+                )
+
+                image_jobs.append(
+                    {
+                        "variant": variant,
+                        "variant_index": variant_index,
+                        "image_index": image_index,
+                        "variant_name": variant_name,
+                        "svg": svg,
+                        "public_id": public_id,
+                    }
+                )
+
+        return image_jobs
+
+    # =========================================================
+    # RECONCILE VARIANT IMAGES
+    # =========================================================
+
+    def reconcile_variant_images(
+        self,
+        product,
+        variants,
+    ):
+        """
+        Repair image state for existing variants.
+
+        Existing image records are retained. Missing gallery images
+        are uploaded and created.
+        """
+
+        total_variants = len(variants)
+        total_images = 0
+
+        image_jobs = []
+
+        for variant_index, variant in enumerate(
+            variants,
+            start=1,
+        ):
+            existing_images = {
+                image.display_order: image
+                for image in variant.images.all()
+            }
+
+            variant_name = variant.name
+
+            for image_index in range(
+                1,
+                self.IMAGES_PER_VARIANT + 1,
+            ):
+                existing_image = existing_images.get(
+                    image_index
+                )
+
+                if existing_image:
+                    continue
+
+                background = self.random.choice(
+                    self.IMAGE_BACKGROUNDS
+                )
+
+                svg = self.build_variant_svg(
+                    product_name=product.name,
+                    variant_name=variant_name,
+                    variant_index=variant_index,
+                    image_index=image_index,
+                    background=background,
+                )
+
+                public_id = (
+                    f"{self.CLOUDINARY_FOLDER}/"
+                    f"{product.id}/"
+                    f"variant-{variant.id}/"
+                    f"image-{image_index}"
+                )
+
+                image_jobs.append(
+                    {
+                        "variant": variant,
+                        "variant_index": variant_index,
+                        "image_index": image_index,
+                        "variant_name": variant_name,
+                        "svg": svg,
+                        "public_id": public_id,
+                    }
+                )
+
+        if image_jobs:
+            uploaded_results = {}
+
+            try:
+                uploaded_results = (
+                    self.upload_images_concurrently(
+                        image_jobs
+                    )
+                )
+
+                image_records = []
+
+                for job in image_jobs:
+                    result = uploaded_results.get(
+                        job["public_id"]
+                    )
+
+                    if not result:
+                        raise RuntimeError(
+                            "Missing Cloudinary upload result "
+                            f"for '{job['public_id']}'."
+                        )
+
+                    public_id = result.get(
+                        "public_id"
+                    )
+
+                    if not public_id:
+                        raise RuntimeError(
+                            "Cloudinary upload returned no "
+                            f"public_id for '{job['public_id']}'."
+                        )
+
+                    image_records.append(
+                        ProductVariantImage(
+                            variant=job["variant"],
+                            image=public_id,
+                            alt_text=(
+                                f"{product.name} - "
+                                f"{job['variant_name']} - "
+                                f"Image {job['image_index']}"
+                            ),
+                            is_primary=(
+                                job["image_index"] == 1
+                            ),
+                            display_order=(
+                                job["image_index"]
+                            ),
+                            is_active=True,
+                        )
+                    )
+
+                with transaction.atomic():
+                    ProductVariantImage.objects.bulk_create(
+                        image_records,
+                        batch_size=500,
+                    )
+
+                    total_images += len(
+                        image_records
+                    )
+
+            except Exception:
+                self.cleanup_uploaded_images(
+                    uploaded_results
+                )
+
+                raise
+
+        # -----------------------------------------------------
+        # REPAIR PRIMARY IMAGE REFERENCES
+        # -----------------------------------------------------
+
+        self.repair_primary_variant_images(
+            variants
+        )
+
+        return (
+            total_variants,
+            total_images,
+        )
+
+    # =========================================================
+    # REPAIR PRIMARY IMAGE REFERENCES
+    # =========================================================
+
+    def repair_primary_variant_images(
+        self,
+        variants,
+    ):
+        """
+        Ensure every variant points to its image #1 as its
+        primary ProductVariantImage.
+        """
+
+        variants_to_update = []
+
+        for variant in variants:
+            primary_image = (
+                ProductVariantImage.objects
+                .filter(
+                    variant=variant,
+                    display_order=1,
+                    is_active=True,
+                )
+                .order_by("created_at")
+                .first()
+            )
+
+            if not primary_image:
+                continue
+
+            if (
+                variant.productvariantimage_id
+                != primary_image.pk
+            ):
+                variant.productvariantimage_id = (
+                    primary_image.pk
+                )
+
+                variants_to_update.append(
+                    variant
+                )
+
+        if variants_to_update:
+            ProductVariant.objects.bulk_update(
+                variants_to_update,
+                [
+                    "productvariantimage",
+                    "updated_at",
+                ],
+                batch_size=100,
+            )
+
+    # =========================================================
+    # BUILD VARIANT SVG
+    # =========================================================
+
+    def build_variant_svg(
+        self,
         product_name,
         variant_name,
         variant_index,
+        image_index,
+        background,
     ):
-        import cloudinary.uploader
-
-        background = self.random.choice(
-            self.IMAGE_BACKGROUNDS
-        )
-
         safe_product_name = escape(
-            product_name
+            str(product_name)
         )
 
         safe_variant_name = escape(
-            variant_name
+            str(variant_name)
         )
 
-        svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <svg
-        xmlns="http://www.w3.org/2000/svg"
+        image_labels = {
+            1: "PRIMARY",
+            2: "GALLERY",
+            3: "DETAIL",
+            4: "ALTERNATE",
+            5: "VIEW",
+        }
+
+        image_label = image_labels.get(
+            image_index,
+            "GALLERY",
+        )
+
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="1000"
+    height="1000"
+    viewBox="0 0 1000 1000"
+>
+    <rect
         width="1000"
         height="1000"
-        viewBox="0 0 1000 1000"
+        fill="{background}"
+    />
+
+    <rect
+        x="80"
+        y="80"
+        width="840"
+        height="840"
+        rx="40"
+        fill="#FFFFFF"
+        stroke="#D1D5DB"
+        stroke-width="4"
+    />
+
+    <circle
+        cx="500"
+        cy="330"
+        r="150"
+        fill="{background}"
+        stroke="#9CA3AF"
+        stroke-width="5"
+    />
+
+    <text
+        x="500"
+        y="310"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="42"
+        font-weight="700"
+        fill="#111827"
     >
-        <rect
-            width="1000"
-            height="1000"
-            fill="{background}"
-        />
+        MOCK
+    </text>
 
-        <rect
-            x="80"
-            y="80"
-            width="840"
-            height="840"
-            rx="40"
-            fill="#FFFFFF"
-            stroke="#D1D5DB"
-            stroke-width="4"
-        />
+    <text
+        x="500"
+        y="375"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="28"
+        fill="#374151"
+    >
+        PRODUCT
+    </text>
 
-        <circle
-            cx="500"
-            cy="330"
-            r="150"
-            fill="{background}"
-            stroke="#9CA3AF"
-            stroke-width="5"
-        />
+    <text
+        x="500"
+        y="590"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="36"
+        font-weight="700"
+        fill="#111827"
+    >
+        {safe_product_name}
+    </text>
 
-        <text
-            x="500"
-            y="310"
-            text-anchor="middle"
-            font-family="Arial, Helvetica, sans-serif"
-            font-size="42"
-            font-weight="700"
-            fill="#111827"
-        >
-            MOCK
-        </text>
+    <text
+        x="500"
+        y="650"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="28"
+        fill="#4B5563"
+    >
+        {safe_variant_name}
+    </text>
 
-        <text
-            x="500"
-            y="375"
-            text-anchor="middle"
-            font-family="Arial, Helvetica, sans-serif"
-            font-size="28"
-            fill="#374151"
-        >
-            PRODUCT
-        </text>
+    <text
+        x="500"
+        y="715"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="22"
+        fill="#6B7280"
+    >
+        {image_label}
+    </text>
 
-        <text
-            x="500"
-            y="590"
-            text-anchor="middle"
-            font-family="Arial, Helvetica, sans-serif"
-            font-size="36"
-            font-weight="700"
-            fill="#111827"
-        >
-            {safe_product_name}
-        </text>
+    <text
+        x="500"
+        y="755"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="20"
+        fill="#9CA3AF"
+    >
+        Variant {variant_index} · Image {image_index}
+    </text>
+</svg>
+"""
 
-        <text
-            x="500"
-            y="650"
-            text-anchor="middle"
-            font-family="Arial, Helvetica, sans-serif"
-            font-size="28"
-            fill="#4B5563"
-        >
-            {safe_variant_name}
-        </text>
+    # =========================================================
+    # UPLOAD IMAGES CONCURRENTLY
+    # =========================================================
 
-        <text
-            x="500"
-            y="735"
-            text-anchor="middle"
-            font-family="Arial, Helvetica, sans-serif"
-            font-size="22"
-            fill="#6B7280"
-        >
-            Variant {variant_index}
-        </text>
-    </svg>
-    """
+    def upload_images_concurrently(
+        self,
+        image_jobs,
+    ):
+        """
+        Upload all image jobs concurrently.
 
-        # ---------------------------------------------------------
-        # CLOUDINARY PUBLIC ID
-        # ---------------------------------------------------------
-        #
-        # This is NOT a fake image.
-        #
-        # The SVG content is uploaded directly to Cloudinary and
-        # Cloudinary returns the real public_id.
-        #
-        # ---------------------------------------------------------
+        Only network-bound Cloudinary work happens inside the worker
+        threads. Django ORM operations remain in the main thread.
+        """
 
-        public_id = (
-            f"mock-products/"
-            f"{variant.product_id}/"
-            f"variant-{variant_index}"
+        results = {}
+
+        if not image_jobs:
+            return results
+
+        worker_count = min(
+            self.CLOUDINARY_WORKERS,
+            len(image_jobs),
         )
 
-        upload_result = cloudinary.uploader.upload(
-            svg.encode("utf-8"),
-            public_id=public_id,
+        self.stdout.write(
+            f"    Uploading {len(image_jobs)} Cloudinary images "
+            f"using {worker_count} workers..."
+        )
+
+        successful = 0
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count
+        ) as executor:
+
+            future_map = {
+                executor.submit(
+                    self.upload_single_image,
+                    job,
+                ): job
+                for job in image_jobs
+            }
+
+            for future in as_completed(
+                future_map
+            ):
+                job = future_map[future]
+
+                try:
+                    result = future.result()
+
+                except Exception:
+                    # Cancel jobs that have not started.
+                    for pending_future in future_map:
+                        pending_future.cancel()
+
+                    # Remove assets already uploaded.
+                    self.cleanup_uploaded_images(
+                        results
+                    )
+
+                    raise
+
+                results[
+                    job["public_id"]
+                ] = result
+
+                successful += 1
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"    Cloudinary uploads completed: "
+                f"{successful}/{len(image_jobs)}"
+            )
+        )
+
+        return results
+
+    # =========================================================
+    # UPLOAD SINGLE IMAGE
+    # =========================================================
+
+    def upload_single_image(
+        self,
+        job,
+    ):
+        """
+        Upload exactly one SVG asset to Cloudinary.
+
+        Every gallery image has its own deterministic public ID.
+        """
+
+        return cloudinary.uploader.upload(
+            job["svg"].encode("utf-8"),
+            public_id=job["public_id"],
             resource_type="image",
             format="svg",
-            overwrite=True,
+            overwrite=self.CLOUDINARY_OVERWRITE,
+            tags=[
+                "mock-product",
+                f"variant-{job['variant'].id}",
+                f"gallery-image-{job['image_index']}",
+            ],
         )
 
-        cloudinary_public_id = upload_result.get(
-            "public_id"
+    # =========================================================
+    # CLEAN UP UPLOADED IMAGES
+    # =========================================================
+
+    def cleanup_uploaded_images(
+        self,
+        upload_results,
+    ):
+        """
+        Remove Cloudinary assets uploaded by the current operation.
+
+        This is necessary because database transactions cannot
+        automatically roll back Cloudinary uploads.
+        """
+
+        if not upload_results:
+            return
+
+        self.stdout.write(
+            self.style.WARNING(
+                "Cleaning up partially uploaded Cloudinary images..."
+            )
         )
 
-        if not cloudinary_public_id:
-            raise RuntimeError(
-                "Cloudinary upload succeeded but no public_id "
-                "was returned."
+        for result in upload_results.values():
+            public_id = result.get(
+                "public_id"
             )
 
-        # ---------------------------------------------------------
-        # CREATE ProductVariantImage
-        # ---------------------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # ProductVariantImage.save() calls full_clean().
-        #
-        # Therefore the CloudinaryField must contain the string
-        # public_id BEFORE image.save() is called.
-        #
-        # ---------------------------------------------------------
+            if not public_id:
+                continue
 
-        image = ProductVariantImage(
-            variant=variant,
-            image=cloudinary_public_id,
-            alt_text=(
-                f"{product_name} - "
-                f"{variant_name}"
-            ),
-            is_primary=True,
-            display_order=1,
-            is_active=True,
-        )
+            try:
+                cloudinary.uploader.destroy(
+                    public_id,
+                    resource_type="image",
+                )
 
-        image.save()
+            except Exception as exc:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Could not delete Cloudinary asset "
+                        f"'{public_id}': {exc}"
+                    )
+                )
 
-        return image
-
-    # ---------------------------------------------------------
+    # =========================================================
     # STORE OPERATING HOURS
-    # ---------------------------------------------------------
+    # =========================================================
 
     def create_store_operating_hours(
         self,
         store,
     ):
+        """
+        Create/update all seven days for a store.
+
+        Safe to run repeatedly.
+        """
+
         for weekday, hours in self.STORE_HOURS.items():
             opens_at, closes_at = hours
 
@@ -1380,15 +2335,20 @@ class Command(BaseCommand):
                     "opens_at": None,
                     "closes_at": None,
                     "pickup_available": False,
-                    "notes": "Store closed on Sunday.",
+                    "notes": (
+                        "Store closed on Sunday."
+                    ),
                 }
+
             else:
                 defaults = {
                     "is_closed": False,
                     "opens_at": opens_at,
                     "closes_at": closes_at,
                     "pickup_available": True,
-                    "notes": "Regular store operating hours.",
+                    "notes": (
+                        "Regular store operating hours."
+                    ),
                 }
 
             StoreOperatingHour.objects.update_or_create(
@@ -1397,9 +2357,9 @@ class Command(BaseCommand):
                 defaults=defaults,
             )
 
-    # ---------------------------------------------------------
-    # OUTPUT
-    # ---------------------------------------------------------
+    # =========================================================
+    # PRODUCT SUMMARY
+    # =========================================================
 
     def get_product_summary(self):
         return {
@@ -1415,5 +2375,8 @@ class Command(BaseCommand):
             ),
             "variants_per_product": (
                 self.VARIANTS_PER_PRODUCT
+            ),
+            "images_per_variant": (
+                self.IMAGES_PER_VARIANT
             ),
         }
