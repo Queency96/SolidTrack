@@ -5,6 +5,10 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import extend_schema
 
+# Add these imports at the top
+from common.geolocation import get_client_ip, get_location_from_ip
+from .serializers import LocationUpdateSerializer
+
 from .models import User, EmailVerification
 from .serializers import (
     LoginSerializer,
@@ -96,6 +100,18 @@ class LoginView(GenericAPIView):
         serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
+        user = data["user"]
+
+        # --- IP Geolocation Logic ---
+        ip_address = get_client_ip(request)
+        if ip_address:
+            location = get_location_from_ip(ip_address)
+            user.last_detected_ip = ip_address
+            if location:
+                user.state = location.get('state', user.state)
+                user.city = location.get('city', user.city)
+            user.save(update_fields=['last_detected_ip', 'state', 'city'])
+        # ----------------------------
 
         return Response(
             {
@@ -103,10 +119,32 @@ class LoginView(GenericAPIView):
                 "message": "Login successful.",
                 "access": data["access"],
                 "refresh": data["refresh"],
-                "user": UserSerializer(data["user"]).data,
+                "user": UserSerializer(user).data,
             },
             status=status.HTTP_200_OK,
         )
+
+
+
+@extend_schema(request=LocationUpdateSerializer)
+class UpdateLocationView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LocationUpdateSerializer
+    
+    def patch(self, request, *args, **kwargs):
+        serializer = self.get_serializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        return Response(
+            {
+                "success": True,
+                "message": "Location updated successfully.",
+                "user": UserSerializer(request.user).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 
 

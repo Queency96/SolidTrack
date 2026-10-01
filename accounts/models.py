@@ -52,8 +52,25 @@ class User(AbstractUser, TimeStampedModel):
     )
     is_phone_verified = models.BooleanField(
         default=False
+    )    
+    # --- New Location Fields ---
+    state = models.CharField(
+        max_length=100,
+        blank=True,
+        default=""
     )
+    city = models.CharField(
+        max_length=100,
+        blank=True,
+        default=""
+    )
+    last_detected_ip = models.GenericIPAddressField(
+        null=True,
+        blank=True
+    )
+
     USERNAME_FIELD = "email"
+
     
     REQUIRED_FIELDS = [
         "first_name",

@@ -50,7 +50,14 @@ class UserSerializer(serializers.ModelSerializer):
             "profile_picture",
             "is_email_verified",
             "is_phone_verified",
+            "state",  # <-- Added
+            "city",   # <-- Added
         ]
+
+class LocationUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["state", "city"]
 
 
 class RegisterSerializer(serializers.ModelSerializer):
