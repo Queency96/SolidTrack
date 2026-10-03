@@ -21,15 +21,10 @@ def get_category_queryset():
     """
     Base ProductCategory queryset used by admin/category APIs.
 
-    Database calculates:
-
-        - product_count
-        - active_product_count
+    The database calculates:
+        - product_count (all products)
+        - active_product_count (active + published only)
         - has_children
-
-    The parent category is loaded with select_related().
-
-    Annotation names intentionally differ from model properties.
     """
 
     children_queryset = ProductCategory.objects.filter(
@@ -56,10 +51,7 @@ def get_category_queryset():
                 children_queryset,
             ),
         )
-        .order_by(
-            "sort_order",
-            "name",
-        )
+        .order_by("sort_order", "name")
     )
 
 
@@ -69,10 +61,8 @@ def get_public_category_queryset():
 
     Only active categories are exposed.
 
-    Product counts represent products that are:
-
-        - active
-        - published
+    Product counts represent products that are both active
+    and published.
     """
 
     children_queryset = ProductCategory.objects.filter(
@@ -82,9 +72,7 @@ def get_public_category_queryset():
 
     return (
         ProductCategory.objects
-        .filter(
-            is_active=True,
-        )
+        .filter(is_active=True)
         .select_related("parent")
         .annotate(
             _annotated_product_count=Count(
@@ -95,22 +83,9 @@ def get_public_category_queryset():
                 ),
                 distinct=True,
             ),
-            _annotated_active_product_count=Count(
-                "products",
-                filter=Q(
-                    products__is_active=True,
-                    products__is_published=True,
-                ),
-                distinct=True,
-            ),
-            _annotated_has_children=Exists(
-                children_queryset,
-            ),
+            _annotated_has_children=Exists(children_queryset),
         )
-        .order_by(
-            "sort_order",
-            "name",
-        )
+        .order_by("sort_order", "name")
     )
 
 
@@ -127,9 +102,6 @@ def attach_root_category_ids(categories):
 
     It follows the parent relationships that were loaded by
     select_related("parent") and resolves the root in memory.
-
-    If the complete hierarchy is not present in the supplied
-    collection, the already-loaded parent chain is used.
 
     A defensive cycle check prevents infinite loops if malformed
     category data exists.
@@ -150,8 +122,6 @@ def attach_root_category_ids(categories):
             current_id = current.pk
 
             if current_id in visited:
-                # Defensive protection against malformed
-                # cyclic category data.
                 break
 
             visited.add(current_id)
@@ -166,7 +136,6 @@ def attach_root_category_ids(categories):
         if current.pk not in visited:
             resolved_roots[category.pk] = current.pk
         else:
-            # Defensive fallback for a malformed cycle.
             resolved_roots[category.pk] = category.pk
 
     for category in categories:
@@ -189,31 +158,15 @@ class PublicProductCategoryListView(generics.ListAPIView):
     """
 
     serializer_class = PublicProductCategorySerializer
+    permission_classes = [AllowAny]
 
-    permission_classes = [
-        AllowAny,
-    ]
+    filter_backends = [SearchFilter, OrderingFilter]
 
-    filter_backends = [
-        SearchFilter,
-        OrderingFilter,
-    ]
+    search_fields = ["name", "description"]
 
-    search_fields = [
-        "name",
-        "description",
-    ]
+    ordering_fields = ["name", "sort_order", "created_at"]
 
-    ordering_fields = [
-        "name",
-        "sort_order",
-        "created_at",
-    ]
-
-    ordering = [
-        "sort_order",
-        "name",
-    ]
+    ordering = ["sort_order", "name"]
 
     def get_queryset(self):
         return get_public_category_queryset()
@@ -224,18 +177,10 @@ class PublicProductCategoryListView(generics.ListAPIView):
         without serializer N+1 queries.
         """
 
-        queryset = self.filter_queryset(
-            self.get_queryset()
-        )
-
+        queryset = self.filter_queryset(self.get_queryset())
         categories = list(queryset)
-
         attach_root_category_ids(categories)
-
-        serializer = self.get_serializer(
-            categories,
-            many=True,
-        )
+        serializer = self.get_serializer(categories, many=True)
 
         return Response(serializer.data)
 
@@ -244,19 +189,13 @@ class PublicProductCategoryListView(generics.ListAPIView):
 # Public Category Detail
 # ==========================================================
 
-class PublicProductCategoryDetailView(
-    generics.RetrieveAPIView
-):
+class PublicProductCategoryDetailView(generics.RetrieveAPIView):
     """
     Public detail endpoint for an active category.
     """
 
     serializer_class = PublicProductCategorySerializer
-
-    permission_classes = [
-        AllowAny,
-    ]
-
+    permission_classes = [AllowAny]
     lookup_field = "slug"
 
     def get_queryset(self):
@@ -264,11 +203,7 @@ class PublicProductCategoryDetailView(
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-
-        attach_root_category_ids(
-            [instance],
-        )
-
+        attach_root_category_ids([instance])
         serializer = self.get_serializer(instance)
 
         return Response(serializer.data)
@@ -283,53 +218,30 @@ class CategoryOptionsView(APIView):
     Return active options belonging to an active category.
 
     Example:
-
         GET /categories/<slug>/options/
     """
 
-    permission_classes = [
-        AllowAny,
-    ]
+    permission_classes = [AllowAny]
 
     def get(self, request, category_slug):
         category = (
             ProductCategory.objects
-            .filter(
-                slug=category_slug,
-                is_active=True,
-            )
-            .only(
-                "id",
-                "name",
-                "slug",
-            )
+            .filter(slug=category_slug, is_active=True)
+            .only("id", "name", "slug")
             .first()
         )
 
         if category is None:
             return Response(
-                {
-                    "detail": "Category not found.",
-                },
+                {"detail": "Category not found."},
                 status=404,
             )
 
         category_options = (
             CategoryOption.objects
-            .filter(
-                category_id=category.pk,
-                is_active=True,
-            )
-            .only(
-                "id",
-                "name",
-                "slug",
-                "sort_order",
-            )
-            .order_by(
-                "sort_order",
-                "name",
-            )
+            .filter(category_id=category.pk, is_active=True)
+            .only("id", "name", "slug", "sort_order")
+            .order_by("sort_order", "name")
         )
 
         serializer = CategoryOptionSimpleSerializer(
@@ -361,46 +273,21 @@ class AdminProductCategoryListCreateView(
     Admin category list and creation endpoint.
     """
 
-    permission_classes = [
-        IsAdminUser,
-    ]
-
+    permission_classes = [IsAdminUser]
     serializer_class = ProductCategorySerializer
 
-    filter_backends = [
-        SearchFilter,
-        OrderingFilter,
-    ]
+    filter_backends = [SearchFilter, OrderingFilter]
 
-    search_fields = [
-        "name",
-        "slug",
-        "description",
-    ]
+    search_fields = ["name", "slug", "description"]
 
-    ordering_fields = [
-        "name",
-        "sort_order",
-        "created_at",
-        "updated_at",
-    ]
+    ordering_fields = ["name", "sort_order", "created_at", "updated_at"]
 
-    ordering = [
-        "sort_order",
-        "name",
-    ]
+    ordering = ["sort_order", "name"]
 
     def get_queryset(self):
         return get_category_queryset()
 
     def perform_create(self, serializer):
-        """
-        Keep creation through the serializer.
-
-        This method is intentionally thin because category
-        creation does not require additional ownership logic.
-        """
-
         serializer.save()
 
 
@@ -415,12 +302,8 @@ class AdminProductCategoryDetailView(
     Admin category retrieve/update/delete endpoint.
     """
 
-    permission_classes = [
-        IsAdminUser,
-    ]
-
+    permission_classes = [IsAdminUser]
     serializer_class = ProductCategorySerializer
-
     lookup_field = "pk"
 
     def get_queryset(self):

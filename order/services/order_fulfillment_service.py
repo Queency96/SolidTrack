@@ -1,11 +1,17 @@
 from decimal import Decimal
 import uuid
+
 from django.db import transaction
 from django.utils import timezone
-from deliveries.models import(
+
+from deliveries.models import (
     Delivery,
     DeliveryAddress,
 )
+from deliveries.dispatch.assignment import AssignmentService
+from deliveries.services.delivery_service import DeliveryService
+from deliveries.services.pricing_service import PricingService
+
 from ..models import (
     Order,
     OrderFulfillment,
@@ -17,42 +23,9 @@ class OrderFulfillmentService:
     """
     Coordinates the lifecycle of an OrderFulfillment.
 
-    Fulfillment lifecycle:
-
-        PENDING
-            ↓
-        PROCESSING
-            ↓
-        PACKING
-            ↓
-        READY_FOR_DISPATCH
-            ↓
-        Delivery Created
-            ↓
-        DispatchPipeline / DispatchCoordinator
-            ↓
-        DISPATCHED
-            ↓
-        OUT_FOR_DELIVERY
-            ↓
-        DELIVERED
-
-    Responsibilities:
-
-        - Start fulfillment
-        - Start packing
-        - Create packages
-        - Validate packages
-        - Mark fulfillment ready
-        - Create delivery
-        - Create delivery addresses
-        - Mark fulfillment dispatched
-        - Mark fulfillment out for delivery
-        - Mark fulfillment delivered
-        - Cancel fulfillment
-
-    Rider matching and assignment are delegated to the
-    dispatch layer.
+    Delivery creation is delegated to
+    DeliveryService.create_delivery (O3-B). This service
+    does not duplicate route, pricing, or dispatch logic.
     """
 
     # ==================================================
@@ -61,42 +34,19 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def start_processing(
-        cls,
-        *,
-        fulfillment,
-    ):
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
-
-        cls._ensure_not_terminal(
-            fulfillment=fulfillment,
-        )
+    def start_processing(cls, *, fulfillment):
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
+        cls._ensure_not_terminal(fulfillment=fulfillment)
 
         if fulfillment.status != OrderFulfillment.Status.PENDING:
-            raise ValueError(
-                "Fulfillment is not pending."
-            )
+            raise ValueError("Fulfillment is not pending.")
 
-        cls._ensure_order_can_fulfill(
-            fulfillment=fulfillment,
-        )
+        cls._ensure_order_can_fulfill(fulfillment=fulfillment)
 
-        fulfillment.status = (
-            OrderFulfillment.Status.PROCESSING
-        )
-
+        fulfillment.status = OrderFulfillment.Status.PROCESSING
         fulfillment.processing_at = timezone.now()
 
-        fulfillment.save(
-            update_fields=[
-                "status",
-                "processing_at",
-                "updated_at",
-            ]
-        )
-
+        fulfillment.save(update_fields=["status", "processing_at", "updated_at"])
         return fulfillment
 
     # ==================================================
@@ -105,43 +55,21 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def start_packing(
-        cls,
-        *,
-        fulfillment,
-    ):
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
-
-        cls._ensure_not_terminal(
-            fulfillment=fulfillment,
-        )
+    def start_packing(cls, *, fulfillment):
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
+        cls._ensure_not_terminal(fulfillment=fulfillment)
 
         if fulfillment.status != OrderFulfillment.Status.PROCESSING:
             raise ValueError(
-                "Fulfillment must be processing "
-                "before packing can begin."
+                "Fulfillment must be processing before packing can begin."
             )
 
-        cls._ensure_order_can_fulfill(
-            fulfillment=fulfillment,
-        )
+        cls._ensure_order_can_fulfill(fulfillment=fulfillment)
 
-        fulfillment.status = (
-            OrderFulfillment.Status.PACKING
-        )
-
+        fulfillment.status = OrderFulfillment.Status.PACKING
         fulfillment.packing_at = timezone.now()
 
-        fulfillment.save(
-            update_fields=[
-                "status",
-                "packing_at",
-                "updated_at",
-            ]
-        )
-
+        fulfillment.save(update_fields=["status", "packing_at", "updated_at"])
         return fulfillment
 
     # ==================================================
@@ -166,75 +94,42 @@ class OrderFulfillmentService:
         description="",
         packaging_note="",
     ):
-        """
-        Create a physical package for a fulfillment.
-        """
-
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
 
         if fulfillment.status not in [
             OrderFulfillment.Status.PROCESSING,
             OrderFulfillment.Status.PACKING,
         ]:
             raise ValueError(
-                "Packages can only be created while "
-                "the fulfillment is being prepared."
+                "Packages can only be created while the fulfillment "
+                "is being prepared."
             )
 
-        cls._ensure_order_can_fulfill(
-            fulfillment=fulfillment,
-        )
+        cls._ensure_order_can_fulfill(fulfillment=fulfillment)
 
         cls._validate_package_values(
-            weight=weight,
-            length=length,
-            width=width,
-            height=height,
-            declared_value=declared_value,
+            weight=weight, length=length, width=width,
+            height=height, declared_value=declared_value,
         )
 
-        package = Package.objects.create(
+        return Package.objects.create(
             fulfillment=fulfillment,
-
-            package_number=(
-                cls._generate_package_number()
-            ),
-
-            tracking_number=(
-                cls._generate_package_tracking_number()
-            ),
-
+            package_number=cls._generate_package_number(),
+            tracking_number=cls._generate_package_tracking_number(),
             package_type=package_type,
-
             status=Package.Status.CREATED,
-
             weight=weight,
             length=length,
             width=width,
             height=height,
-
             declared_value=declared_value,
-
             currency=fulfillment.currency,
-
             is_fragile=is_fragile,
-
-            requires_special_handling=(
-                requires_special_handling
-            ),
-
-            special_handling_note=(
-                special_handling_note
-            ),
-
+            requires_special_handling=requires_special_handling,
+            special_handling_note=special_handling_note,
             description=description,
-
             packaging_note=packaging_note,
         )
-
-        return package
 
     # ==================================================
     # Start Package Packing
@@ -242,19 +137,11 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def start_package_packing(
-        cls,
-        *,
-        package,
-    ):
-        package = cls._lock_package(
-            package=package,
-        )
+    def start_package_packing(cls, *, package):
+        package = cls._lock_package(package=package)
 
         if package.status != Package.Status.CREATED:
-            raise ValueError(
-                "Package is not in the created state."
-            )
+            raise ValueError("Package is not in the created state.")
 
         fulfillment = cls._lock_fulfillment(
             fulfillment=package.fulfillment,
@@ -265,19 +152,11 @@ class OrderFulfillmentService:
             OrderFulfillment.Status.PACKING,
         ]:
             raise ValueError(
-                "Fulfillment is not currently "
-                "being prepared."
+                "Fulfillment is not currently being prepared."
             )
 
         package.status = Package.Status.PACKING
-
-        package.save(
-            update_fields=[
-                "status",
-                "updated_at",
-            ]
-        )
-
+        package.save(update_fields=["status", "updated_at"])
         return package
 
     # ==================================================
@@ -286,36 +165,20 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_package_packed(
-        cls,
-        *,
-        package,
-    ):
-        package = cls._lock_package(
-            package=package,
-        )
+    def mark_package_packed(cls, *, package):
+        package = cls._lock_package(package=package)
 
         if package.status not in [
             Package.Status.CREATED,
             Package.Status.PACKING,
         ]:
             raise ValueError(
-                "Package cannot be marked as packed "
-                "from its current state."
+                "Package cannot be marked as packed from its current state."
             )
 
         package.status = Package.Status.PACKED
-
         package.packed_at = timezone.now()
-
-        package.save(
-            update_fields=[
-                "status",
-                "packed_at",
-                "updated_at",
-            ]
-        )
-
+        package.save(update_fields=["status", "packed_at", "updated_at"])
         return package
 
     # ==================================================
@@ -324,33 +187,19 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_package_ready(
-        cls,
-        *,
-        package,
-    ):
-        package = cls._lock_package(
-            package=package,
-        )
+    def mark_package_ready(cls, *, package):
+        package = cls._lock_package(package=package)
 
         if package.status != Package.Status.PACKED:
             raise ValueError(
-                "Package must be packed before "
-                "it can be ready for pickup."
+                "Package must be packed before it can be ready for pickup."
             )
 
         package.status = Package.Status.READY_FOR_PICKUP
-
         package.ready_for_pickup_at = timezone.now()
-
         package.save(
-            update_fields=[
-                "status",
-                "ready_for_pickup_at",
-                "updated_at",
-            ]
+            update_fields=["status", "ready_for_pickup_at", "updated_at"]
         )
-
         return package
 
     # ==================================================
@@ -359,79 +208,50 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_ready_for_dispatch(
-        cls,
-        *,
-        fulfillment,
-    ):
+    def mark_ready_for_dispatch(cls, *, fulfillment):
         """
         Mark fulfillment ready for dispatch.
 
-        A Delivery is created at this point.
-
-        The dispatch layer is responsible for:
-
-            - Finding riders
-            - Ranking riders
-            - Creating offers
-            - Assigning riders
-            - Rider acceptance
+        Delivery creation is delegated to
+        DeliveryService.create_delivery (O3-B). This service
+        is responsible only for validating fulfillment
+        readiness and passing the delivery inputs through.
         """
 
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
-
-        cls._ensure_not_terminal(
-            fulfillment=fulfillment,
-        )
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
+        cls._ensure_not_terminal(fulfillment=fulfillment)
 
         if fulfillment.status not in [
             OrderFulfillment.Status.PACKING,
             OrderFulfillment.Status.PROCESSING,
         ]:
             raise ValueError(
-                "Fulfillment is not currently "
-                "being prepared."
+                "Fulfillment is not currently being prepared."
             )
 
-        cls._ensure_order_can_fulfill(
-            fulfillment=fulfillment,
-        )
+        cls._ensure_order_can_fulfill(fulfillment=fulfillment)
+        cls._validate_fulfillment_items(fulfillment=fulfillment)
 
-        cls._validate_fulfillment_items(
-            fulfillment=fulfillment,
-        )
-
-        packages = list(
-            fulfillment.packages.all()
-        )
+        packages = list(fulfillment.packages.all())
 
         if not packages:
             raise ValueError(
-                "Fulfillment must have at least "
-                "one package before dispatch."
+                "Fulfillment must have at least one package before dispatch."
             )
 
         not_ready = [
             package
             for package in packages
-            if package.status
-            != Package.Status.READY_FOR_PICKUP
+            if package.status != Package.Status.READY_FOR_PICKUP
         ]
 
         if not_ready:
             raise ValueError(
-                "All packages must be ready for "
-                "pickup before dispatch."
+                "All packages must be ready for pickup before dispatch."
             )
 
-        fulfillment.status = (
-            OrderFulfillment.Status.READY_FOR_DISPATCH
-        )
-
+        fulfillment.status = OrderFulfillment.Status.READY_FOR_DISPATCH
         fulfillment.ready_for_dispatch_at = timezone.now()
-
         fulfillment.save(
             update_fields=[
                 "status",
@@ -440,633 +260,74 @@ class OrderFulfillmentService:
             ]
         )
 
-        delivery = cls._create_delivery(
-            fulfillment=fulfillment,
-        )
-
+        delivery = cls._create_delivery(fulfillment=fulfillment)
         return fulfillment, delivery
 
     # ==================================================
-    # Create Delivery
+    # Create Delivery (delegates to DeliveryService)
     # ==================================================
 
     @classmethod
-    def _create_delivery(
-        cls,
-        *,
-        fulfillment,
-    ):
+    def _create_delivery(cls, *, fulfillment):
         """
-        Create the Delivery belonging to a fulfillment.
+        Delegate delivery creation to the canonical
+        DeliveryService.create_delivery.
 
-        Delivery is the logistics entity.
-
-        The fulfillment provides:
-
-            - Vendor
-            - Pickup store
-            - Pickup snapshot
-            - Pricing
-            - Currency
-
-        The order address provides:
-
-            - Customer destination
-            - Destination contact
-            - Destination coordinates
+        Idempotent: if a Delivery already exists for this
+        fulfillment, it is returned and DeliveryService is
+        not called again.
         """
 
-        existing_delivery = (
+        existing = (
             Delivery.objects
-            .filter(
-                fulfillment=fulfillment,
-            )
+            .select_for_update()
+            .filter(fulfillment=fulfillment)
             .first()
         )
 
-        if existing_delivery:
+        if existing:
+            return existing
 
-            cls._ensure_delivery_addresses(
-                delivery=existing_delivery,
-                fulfillment=fulfillment,
-            )
+        destination = cls._build_destination_data(fulfillment=fulfillment)
 
-            return existing_delivery
+        validated_data = {
+            "delivery_type": fulfillment.delivery_type,
+            "package_size": fulfillment.package_size,
+            "vehicle_type": fulfillment.vehicle_type,
+            "scheduled_at": fulfillment.scheduled_at,
+            "notes": fulfillment.preparation_note or "",
+            "destination": destination,
+        }
 
-        order = fulfillment.order
-
-        destination = cls._get_delivery_address(
-            order=order,
-        )
-
-        total_package_weight = (
-            cls._calculate_total_package_weight(
-                fulfillment=fulfillment,
-            )
-        )
-
-        package_count = (
-            fulfillment.packages.count()
-        )
-
-        delivery_total = (
-            fulfillment.delivery_fee
-            + fulfillment.service_fee
-            + fulfillment.insurance_fee
-            - fulfillment.discount_amount
-        )
-
-        if delivery_total < Decimal("0.00"):
-            delivery_total = Decimal("0.00")
-
-        delivery = Delivery.objects.create(
+        return DeliveryService.create_delivery(
             fulfillment=fulfillment,
-
-            customer=order.customer,
-
-            vendor=fulfillment.store.vendor,
-
-            pickup_store=fulfillment.store,
-
-            pickup_store_name=(
-                fulfillment.store_name
-            ),
-
-            delivery_type=(
-                Delivery.DeliveryType.INSTANT
-            ),
-
-            status=(
-                Delivery.DeliveryStatus.PENDING
-            ),
-
-            payment_status=(
-                Delivery.PaymentStatus.PAID
-            ),
-
-            currency=fulfillment.currency,
-
-            estimated_price=(
-                fulfillment.delivery_fee
-            ),
-
-            actual_price=Decimal("0.00"),
-
-            base_price=Decimal("0.00"),
-
-            distance_price=Decimal("0.00"),
-
-            weight_price=Decimal("0.00"),
-
-            surge_price=Decimal("0.00"),
-
-            discount=(
-                fulfillment.discount_amount
-            ),
-
-            insurance_fee=(
-                fulfillment.insurance_fee
-            ),
-
-            service_fee=(
-                fulfillment.service_fee
-            ),
-
-            total_price=delivery_total,
-
-            total_package_weight=(
-                total_package_weight
-            ),
-
-            package_count=package_count,
-        )
-
-        cls._create_delivery_addresses(
-            delivery=delivery,
-            fulfillment=fulfillment,
-            destination=destination,
-        )
-
-        return delivery
-
-    # ==================================================
-    # Ensure Delivery Addresses
-    # ==================================================
-
-    @classmethod
-    def _ensure_delivery_addresses(
-        cls,
-        *,
-        delivery,
-        fulfillment,
-    ):
-        """
-        Ensure that both operational delivery addresses
-        exist.
-
-        This makes delivery creation idempotent and also
-        repairs an incomplete delivery if address creation
-        was interrupted.
-        """
-
-        destination = cls._get_delivery_address(
-            order=fulfillment.order,
-        )
-
-        cls._create_delivery_addresses(
-            delivery=delivery,
-            fulfillment=fulfillment,
-            destination=destination,
+            validated_data=validated_data,
         )
 
     # ==================================================
-    # Create Delivery Addresses
-    # ==================================================
-
-    @classmethod
-    def _create_delivery_addresses(
-        cls,
-        *,
-        delivery,
-        fulfillment,
-        destination,
-    ):
-        """
-        Create the pickup and delivery addresses.
-
-        DeliveryAddress contains the operational snapshot
-        used during actual delivery.
-
-        Pickup:
-
-            Comes from OrderFulfillment's store snapshot.
-
-        Destination:
-
-            Comes from the immutable OrderAddress snapshot.
-        """
-
-        pickup_exists = (
-            DeliveryAddress.objects
-            .filter(
-                delivery=delivery,
-                address_type=(
-                    DeliveryAddress.AddressType.PICKUP
-                ),
-            )
-            .exists()
-        )
-
-        if not pickup_exists:
-
-            cls._create_pickup_address(
-                delivery=delivery,
-                fulfillment=fulfillment,
-            )
-
-        destination_exists = (
-            DeliveryAddress.objects
-            .filter(
-                delivery=delivery,
-                address_type=(
-                    DeliveryAddress.AddressType.DELIVERY
-                ),
-            )
-            .exists()
-        )
-
-        if not destination_exists:
-
-            cls._create_destination_address(
-                delivery=delivery,
-                address=destination,
-            )
-
-    # ==================================================
-    # Pickup Delivery Address
+    # Destination Data
     # ==================================================
 
     @staticmethod
-    def _create_pickup_address(
-        *,
-        delivery,
-        fulfillment,
-    ):
+    def _build_destination_data(*, fulfillment):
         """
-        Create the operational pickup address.
+        Build the destination dict that DeliveryService
+        expects (validated_data["destination"]).
 
-        DeliveryAddress fields are populated from the
-        immutable OrderFulfillment store snapshot.
+        OrderFulfillment carries the destination snapshot.
         """
 
-        DeliveryAddress.objects.create(
-            delivery=delivery,
-
-            address_type=(
-                DeliveryAddress.AddressType.PICKUP
-            ),
-
-            contact_name=(
-                fulfillment.store_name
-            ),
-
-            contact_phone=(
-                OrderFulfillmentService
-                ._get_store_contact_phone(
-                    fulfillment=fulfillment,
-                )
-            ),
-
-            address_line_1=(
-                fulfillment.store_address_line_1
-            ),
-
-            address_line_2=(
-                fulfillment.store_address_line_2
-            ),
-
-            city=(
-                fulfillment.store_city
-            ),
-
-            state=(
-                fulfillment.store_state
-            ),
-
-            country=(
-                fulfillment.store_country
-            ),
-
-            postal_code=(
-                fulfillment.store_postal_code
-            ),
-
-            latitude=(
-                fulfillment.store_latitude
-            ),
-
-            longitude=(
-                fulfillment.store_longitude
-            ),
-        )
-
-    # ==================================================
-    # Destination Delivery Address
-    # ==================================================
-
-    @staticmethod
-    def _create_destination_address(
-        *,
-        delivery,
-        address,
-    ):
-        """
-        Create the operational destination address.
-
-        The destination is copied from the immutable
-        order address snapshot.
-
-        No `address` field is used because DeliveryAddress
-        stores each address component separately.
-        """
-
-        contact_name = (
-            getattr(
-                address,
-                "contact_name",
-                None,
-            )
-            or getattr(
-                address,
-                "recipient_name",
-                None,
-            )
-            or getattr(
-                address,
-                "full_name",
-                None,
-            )
-            or ""
-        )
-
-        contact_phone = (
-            getattr(
-                address,
-                "contact_phone",
-                None,
-            )
-            or getattr(
-                address,
-                "phone",
-                None,
-            )
-            or ""
-        )
-
-        address_line_1 = (
-            getattr(
-                address,
-                "address_line_1",
-                "",
-            )
-            or ""
-        )
-
-        address_line_2 = (
-            getattr(
-                address,
-                "address_line_2",
-                "",
-            )
-            or ""
-        )
-
-        city = (
-            getattr(
-                address,
-                "city",
-                "",
-            )
-            or ""
-        )
-
-        state = (
-            getattr(
-                address,
-                "state",
-                "",
-            )
-            or ""
-        )
-
-        country = (
-            getattr(
-                address,
-                "country",
-                "Nigeria",
-            )
-            or "Nigeria"
-        )
-
-        postal_code = (
-            getattr(
-                address,
-                "postal_code",
-                "",
-            )
-            or ""
-        )
-
-        landmark = (
-            getattr(
-                address,
-                "landmark",
-                "",
-            )
-            or ""
-        )
-
-        latitude = getattr(
-            address,
-            "latitude",
-            None,
-        )
-
-        longitude = getattr(
-            address,
-            "longitude",
-            None,
-        )
-
-        if not contact_name.strip():
-
-            raise ValueError(
-                "Delivery address does not have "
-                "a contact name."
-            )
-
-        if not contact_phone.strip():
-
-            raise ValueError(
-                "Delivery address does not have "
-                "a contact phone."
-            )
-
-        if not address_line_1.strip():
-
-            raise ValueError(
-                "Delivery address does not have "
-                "address line 1."
-            )
-
-        if latitude is None or longitude is None:
-
-            raise ValueError(
-                "Delivery address must have "
-                "latitude and longitude."
-            )
-
-        DeliveryAddress.objects.create(
-            delivery=delivery,
-
-            address_type=(
-                DeliveryAddress.AddressType.DELIVERY
-            ),
-
-            contact_name=contact_name,
-
-            contact_phone=contact_phone,
-
-            address_line_1=address_line_1,
-
-            address_line_2=address_line_2,
-
-            city=city,
-
-            state=state,
-
-            country=country,
-
-            postal_code=postal_code,
-
-            landmark=landmark,
-
-            latitude=latitude,
-
-            longitude=longitude,
-        )
-
-    # ==================================================
-    # Store Contact Phone
-    # ==================================================
-
-    @staticmethod
-    def _get_store_contact_phone(
-        *,
-        fulfillment,
-    ):
-        """
-        Resolve the store's operational contact phone.
-
-        The fulfillment model currently does not contain a
-        store phone snapshot, so the live store/vendor
-        relationship is used as a fallback.
-
-        If you later add `store_phone` to the fulfillment
-        snapshot, that field should become the preferred
-        source here.
-        """
-
-        store = fulfillment.store
-
-        possible_fields = [
-            "phone",
-            "phone_number",
-            "contact_phone",
-            "contact_number",
-        ]
-
-        for field_name in possible_fields:
-
-            value = getattr(
-                store,
-                field_name,
-                None,
-            )
-
-            if value:
-
-                return str(value).strip()
-
-        vendor = getattr(
-            store,
-            "vendor",
-            None,
-        )
-
-        if vendor:
-
-            for field_name in possible_fields:
-
-                value = getattr(
-                    vendor,
-                    field_name,
-                    None,
-                )
-
-                if value:
-
-                    return str(value).strip()
-
-        raise ValueError(
-            "Unable to determine the pickup store "
-            "contact phone."
-        )
-
-    # ==================================================
-    # Get Delivery Address
-    # ==================================================
-
-    @staticmethod
-    def _get_delivery_address(
-        *,
-        order,
-    ):
-        """
-        Retrieve the immutable customer delivery
-        address belonging to the order.
-
-        The current architecture expects:
-
-            order.delivery_address
-        """
-
-        try:
-
-            address = order.delivery_address
-
-        except AttributeError as exc:
-
-            raise ValueError(
-                "Order does not have a delivery address."
-            ) from exc
-
-        if address is None:
-
-            raise ValueError(
-                "Order does not have a delivery address."
-            )
-
-        return address
-
-    # ==================================================
-    # Calculate Package Weight
-    # ==================================================
-
-    @staticmethod
-    def _calculate_total_package_weight(
-        *,
-        fulfillment,
-    ):
-        """
-        Calculate the total weight of all packages
-        belonging to the fulfillment.
-        """
-
-        total_weight = Decimal("0.000")
-
-        for package in fulfillment.packages.all():
-
-            weight = package.weight
-
-            if weight is None:
-                continue
-
-            total_weight += Decimal(
-                str(weight)
-            )
-
-        return total_weight
+        return {
+            "address_line_1": fulfillment.delivery_address_line_1,
+            "address_line_2": fulfillment.delivery_address_line_2,
+            "city": fulfillment.delivery_city,
+            "state": fulfillment.delivery_state,
+            "country": fulfillment.delivery_country,
+            "postal_code": fulfillment.delivery_postal_code,
+            "latitude": fulfillment.delivery_latitude,
+            "longitude": fulfillment.delivery_longitude,
+            "instructions": fulfillment.delivery_instructions or "",
+        }
 
     # ==================================================
     # Dispatch
@@ -1074,67 +335,36 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_dispatched(
-        cls,
-        *,
-        fulfillment,
-    ):
-        """
-        Mark fulfillment as dispatched after a rider
-        has been successfully assigned or accepted.
-        """
+    def mark_dispatched(cls, *, fulfillment):
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
 
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
-
-        if fulfillment.status != (
-            OrderFulfillment.Status.READY_FOR_DISPATCH
-        ):
-            raise ValueError(
-                "Fulfillment is not ready for dispatch."
-            )
+        if fulfillment.status != OrderFulfillment.Status.READY_FOR_DISPATCH:
+            raise ValueError("Fulfillment is not ready for dispatch.")
 
         delivery = (
             Delivery.objects
             .select_for_update()
-            .filter(
-                fulfillment=fulfillment,
-            )
+            .filter(fulfillment=fulfillment)
             .first()
         )
 
         if delivery is None:
-
-            raise ValueError(
-                "Fulfillment does not have "
-                "a delivery."
-            )
+            raise ValueError("Fulfillment does not have a delivery.")
 
         if delivery.status not in [
             Delivery.DeliveryStatus.RIDER_ASSIGNED,
             Delivery.DeliveryStatus.RIDER_ACCEPTED,
         ]:
             raise ValueError(
-                "Delivery must have an assigned "
-                "or accepted rider before the "
-                "fulfillment can be dispatched."
+                "Delivery must have an assigned or accepted rider "
+                "before the fulfillment can be dispatched."
             )
 
-        fulfillment.status = (
-            OrderFulfillment.Status.DISPATCHED
-        )
-
+        fulfillment.status = OrderFulfillment.Status.DISPATCHED
         fulfillment.dispatched_at = timezone.now()
-
         fulfillment.save(
-            update_fields=[
-                "status",
-                "dispatched_at",
-                "updated_at",
-            ]
+            update_fields=["status", "dispatched_at", "updated_at"]
         )
-
         return fulfillment
 
     # ==================================================
@@ -1143,37 +373,19 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_out_for_delivery(
-        cls,
-        *,
-        fulfillment,
-    ):
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
+    def mark_out_for_delivery(cls, *, fulfillment):
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
 
-        if fulfillment.status != (
-            OrderFulfillment.Status.DISPATCHED
-        ):
+        if fulfillment.status != OrderFulfillment.Status.DISPATCHED:
             raise ValueError(
-                "Fulfillment must be dispatched "
-                "before going out for delivery."
+                "Fulfillment must be dispatched before going out for delivery."
             )
 
-        fulfillment.status = (
-            OrderFulfillment.Status.OUT_FOR_DELIVERY
-        )
-
+        fulfillment.status = OrderFulfillment.Status.OUT_FOR_DELIVERY
         fulfillment.out_for_delivery_at = timezone.now()
-
         fulfillment.save(
-            update_fields=[
-                "status",
-                "out_for_delivery_at",
-                "updated_at",
-            ]
+            update_fields=["status", "out_for_delivery_at", "updated_at"]
         )
-
         return fulfillment
 
     # ==================================================
@@ -1182,66 +394,38 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def mark_delivered(
-        cls,
-        *,
-        fulfillment,
-    ):
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
+    def mark_delivered(cls, *, fulfillment):
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
 
-        if fulfillment.status != (
-            OrderFulfillment.Status.OUT_FOR_DELIVERY
-        ):
+        if fulfillment.status != OrderFulfillment.Status.OUT_FOR_DELIVERY:
             raise ValueError(
-                "Fulfillment must be out for delivery "
-                "before it can be delivered."
+                "Fulfillment must be out for delivery before it can be delivered."
             )
 
-        packages = list(
-            fulfillment.packages.all()
-        )
+        packages = list(fulfillment.packages.all())
 
         if not packages:
-
-            raise ValueError(
-                "Fulfillment has no packages."
-            )
+            raise ValueError("Fulfillment has no packages.")
 
         not_delivered = [
             package
             for package in packages
-            if package.status
-            != Package.Status.DELIVERED
+            if package.status != Package.Status.DELIVERED
         ]
 
         if not_delivered:
-
             raise ValueError(
-                "All packages must be delivered "
-                "before the fulfillment is "
-                "marked delivered."
+                "All packages must be delivered before the "
+                "fulfillment is marked delivered."
             )
 
-        fulfillment.status = (
-            OrderFulfillment.Status.DELIVERED
-        )
-
+        fulfillment.status = OrderFulfillment.Status.DELIVERED
         fulfillment.delivered_at = timezone.now()
-
         fulfillment.save(
-            update_fields=[
-                "status",
-                "delivered_at",
-                "updated_at",
-            ]
+            update_fields=["status", "delivered_at", "updated_at"]
         )
 
-        cls._update_order_status(
-            fulfillment=fulfillment,
-        )
-
+        cls._update_order_status(fulfillment=fulfillment)
         return fulfillment
 
     # ==================================================
@@ -1250,45 +434,37 @@ class OrderFulfillmentService:
 
     @classmethod
     @transaction.atomic
-    def cancel(
-        cls,
-        *,
-        fulfillment,
-    ):
-        fulfillment = cls._lock_fulfillment(
-            fulfillment=fulfillment,
-        )
+    def cancel(cls, *, fulfillment, cancelled_by=None, reason=""):
+        """
+        Cancel a fulfillment.
+
+        Delivery cancellation is delegated to
+        AssignmentService.cancel_fulfillment (O5-C), which
+        owns Delivery.status transitions and rider
+        availability restore.
+        """
+
+        fulfillment = cls._lock_fulfillment(fulfillment=fulfillment)
 
         if fulfillment.status in [
             OrderFulfillment.Status.DELIVERED,
             OrderFulfillment.Status.CANCELLED,
         ]:
             raise ValueError(
-                "Fulfillment cannot be cancelled "
-                "from its current state."
+                "Fulfillment cannot be cancelled from its current state."
             )
 
-        fulfillment.status = (
-            OrderFulfillment.Status.CANCELLED
-        )
-
+        fulfillment.status = OrderFulfillment.Status.CANCELLED
         fulfillment.cancelled_at = timezone.now()
-
         fulfillment.save(
-            update_fields=[
-                "status",
-                "cancelled_at",
-                "updated_at",
-            ]
+            update_fields=["status", "cancelled_at", "updated_at"]
         )
 
-        Delivery.objects.filter(
+        # Delegate delivery/assignment cancellation.
+        AssignmentService.cancel_fulfillment(
             fulfillment=fulfillment,
-        ).exclude(
-            status=Delivery.DeliveryStatus.DELIVERED,
-        ).update(
-            status=Delivery.DeliveryStatus.CANCELLED,
-            cancelled_at=timezone.now(),
+            cancelled_by=cancelled_by,
+            reason=reason or "Fulfillment cancelled.",
         )
 
         return fulfillment
@@ -1298,30 +474,21 @@ class OrderFulfillmentService:
     # ==================================================
 
     @staticmethod
-    def _validate_fulfillment_items(
-        *,
-        fulfillment,
-    ):
+    def _validate_fulfillment_items(*, fulfillment):
         if not fulfillment.items.exists():
-
             raise ValueError(
-                "Fulfillment must contain at least "
-                "one order item."
+                "Fulfillment must contain at least one order item."
             )
 
         invalid_items = (
             fulfillment.items
-            .exclude(
-                store_id=fulfillment.store_id,
-            )
+            .exclude(store_id=fulfillment.store_id)
             .exists()
         )
 
         if invalid_items:
-
             raise ValueError(
-                "Fulfillment contains an item "
-                "belonging to another store."
+                "Fulfillment contains an item belonging to another store."
             )
 
     # ==================================================
@@ -1330,12 +497,7 @@ class OrderFulfillmentService:
 
     @staticmethod
     def _validate_package_values(
-        *,
-        weight,
-        length,
-        width,
-        height,
-        declared_value,
+        *, weight, length, width, height, declared_value,
     ):
         values = {
             "weight": weight,
@@ -1344,17 +506,12 @@ class OrderFulfillmentService:
             "height": height,
             "declared_value": declared_value,
         }
-
         for field_name, value in values.items():
-
             if value is None:
                 continue
-
             if Decimal(str(value)) < Decimal("0"):
-
                 raise ValueError(
-                    f"{field_name.replace('_', ' ').capitalize()} "
-                    "cannot be negative."
+                    f"{field_name.replace('_', ' ').capitalize()} cannot be negative."
                 )
 
     # ==================================================
@@ -1362,71 +519,42 @@ class OrderFulfillmentService:
     # ==================================================
 
     @staticmethod
-    def _ensure_order_can_fulfill(
-        *,
-        fulfillment,
-    ):
+    def _ensure_order_can_fulfill(*, fulfillment):
         order = fulfillment.order
 
         if order.payment_status != Order.PaymentStatus.PAID:
-
             raise ValueError(
-                "Order must be paid before the "
-                "fulfillment can be processed."
+                "Order must be paid before the fulfillment can be processed."
             )
 
-        if order.status in [
-            Order.Status.CANCELLED,
-            Order.Status.FAILED,
-        ]:
-
-            raise ValueError(
-                "The order cannot be fulfilled."
-            )
+        if order.status in [Order.Status.CANCELLED, Order.Status.FAILED]:
+            raise ValueError("The order cannot be fulfilled.")
 
     # ==================================================
     # Terminal
     # ==================================================
 
     @staticmethod
-    def _ensure_not_terminal(
-        *,
-        fulfillment,
-    ):
+    def _ensure_not_terminal(*, fulfillment):
         if fulfillment.status in [
             OrderFulfillment.Status.DELIVERED,
             OrderFulfillment.Status.CANCELLED,
             OrderFulfillment.Status.FAILED,
         ]:
-
-            raise ValueError(
-                "Fulfillment is in a terminal state."
-            )
+            raise ValueError("Fulfillment is in a terminal state.")
 
     # ==================================================
     # Lock Fulfillment
     # ==================================================
 
     @staticmethod
-    def _lock_fulfillment(
-        *,
-        fulfillment,
-    ):
+    def _lock_fulfillment(*, fulfillment):
         return (
             OrderFulfillment.objects
             .select_for_update()
-            .select_related(
-                "order",
-                "store",
-                "store__vendor",
-            )
-            .prefetch_related(
-                "items",
-                "packages",
-            )
-            .get(
-                pk=fulfillment.pk,
-            )
+            .select_related("order", "store", "store__vendor")
+            .prefetch_related("items", "packages")
+            .get(pk=fulfillment.pk)
         )
 
     # ==================================================
@@ -1434,20 +562,12 @@ class OrderFulfillmentService:
     # ==================================================
 
     @staticmethod
-    def _lock_package(
-        *,
-        package,
-    ):
+    def _lock_package(*, package):
         return (
             Package.objects
             .select_for_update()
-            .select_related(
-                "fulfillment",
-                "fulfillment__order",
-            )
-            .get(
-                pk=package.pk,
-            )
+            .select_related("fulfillment", "fulfillment__order")
+            .get(pk=package.pk)
         )
 
     # ==================================================
@@ -1456,10 +576,8 @@ class OrderFulfillmentService:
 
     @staticmethod
     def _generate_package_number():
-
         return (
-            "PKG-"
-            f"{timezone.now():%Y%m%d}-"
+            f"PKG-{timezone.now():%Y%m%d}-"
             f"{uuid.uuid4().hex[:10].upper()}"
         )
 
@@ -1469,186 +587,67 @@ class OrderFulfillmentService:
 
     @staticmethod
     def _generate_package_tracking_number():
-
-        return (
-            "PKG-TRK-"
-            f"{uuid.uuid4().hex[:12].upper()}"
-        )
+        return f"PKG-TRK-{uuid.uuid4().hex[:12].upper()}"
 
     # ==================================================
     # Update Order Status
     # ==================================================
 
     @classmethod
-    def _update_order_status(
-        cls,
-        *,
-        fulfillment,
-    ):
-        """
-        Recalculate the parent Order status based
-        on all active fulfillments.
-
-        Cancelled fulfillments are excluded from the
-        active fulfillment calculation.
-
-        The order is considered delivered only when
-        every non-cancelled fulfillment is delivered.
-        """
-
+    def _update_order_status(cls, *, fulfillment):
         order = (
             Order.objects
             .select_for_update()
-            .get(
-                pk=fulfillment.order_id,
-            )
+            .get(pk=fulfillment.order_id)
         )
 
-        fulfillments = list(
-            order.fulfillments.all()
-        )
+        fulfillments = list(order.fulfillments.all())
 
         if not fulfillments:
             return
 
-        active_fulfillments = [
+        active = [
             item
             for item in fulfillments
-            if item.status
-            != OrderFulfillment.Status.CANCELLED
+            if item.status != OrderFulfillment.Status.CANCELLED
         ]
 
-        if not active_fulfillments:
+        if not active:
             return
 
-        # ----------------------------------------------
-        # All Delivered
-        # ----------------------------------------------
-
-        if all(
-            item.status
-            == OrderFulfillment.Status.DELIVERED
-            for item in active_fulfillments
-        ):
-
+        if all(item.status == OrderFulfillment.Status.DELIVERED for item in active):
             order.status = Order.Status.DELIVERED
-
             order.delivered_at = timezone.now()
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "delivered_at",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "delivered_at", "updated_at"])
             return
 
-        # ----------------------------------------------
-        # Any Out For Delivery
-        # ----------------------------------------------
-
-        if any(
-            item.status
-            == OrderFulfillment.Status.OUT_FOR_DELIVERY
-            for item in active_fulfillments
-        ):
-
+        if any(item.status == OrderFulfillment.Status.OUT_FOR_DELIVERY for item in active):
             order.status = Order.Status.OUT_FOR_DELIVERY
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "updated_at"])
             return
 
-        # ----------------------------------------------
-        # Any Dispatched
-        # ----------------------------------------------
-
-        if any(
-            item.status
-            == OrderFulfillment.Status.DISPATCHED
-            for item in active_fulfillments
-        ):
-
+        if any(item.status == OrderFulfillment.Status.DISPATCHED for item in active):
             order.status = Order.Status.PROCESSING
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "updated_at"])
             return
 
-        # ----------------------------------------------
-        # Any Ready For Dispatch
-        # ----------------------------------------------
-
-        if any(
-            item.status
-            == OrderFulfillment.Status.READY_FOR_DISPATCH
-            for item in active_fulfillments
-        ):
-
+        if any(item.status == OrderFulfillment.Status.READY_FOR_DISPATCH for item in active):
             order.status = Order.Status.READY_FOR_DISPATCH
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "updated_at"])
             return
 
-        # ----------------------------------------------
-        # Any Processing / Packing
-        # ----------------------------------------------
-
         if any(
-            item.status
-            in [
+            item.status in [
                 OrderFulfillment.Status.PROCESSING,
                 OrderFulfillment.Status.PACKING,
             ]
-            for item in active_fulfillments
+            for item in active
         ):
-
             order.status = Order.Status.PROCESSING
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "updated_at"])
             return
 
-        # ----------------------------------------------
-        # Any Pending
-        # ----------------------------------------------
-
-        if any(
-            item.status
-            == OrderFulfillment.Status.PENDING
-            for item in active_fulfillments
-        ):
-
+        if any(item.status == OrderFulfillment.Status.PENDING for item in active):
             order.status = Order.Status.PENDING
-
-            order.save(
-                update_fields=[
-                    "status",
-                    "updated_at",
-                ]
-            )
-
+            order.save(update_fields=["status", "updated_at"])
             return

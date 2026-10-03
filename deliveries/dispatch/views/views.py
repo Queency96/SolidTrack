@@ -1,10 +1,14 @@
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
+
 from rest_framework import status
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import (
     IsAuthenticated,
     IsAdminUser,
 )
+from rest_framework.response import Response
+
 from deliveries.models import (
     Delivery,
     DeliveryAssignment,
@@ -16,51 +20,34 @@ from deliveries.serializers import (
     DispatchResultSerializer,
     DeliveryOfferSerializer,
 )
-from deliveries.dispatch.coordinator import (
-    DispatchCoordinator,
-)
-from deliveries.dispatch.assignment import (
-    AssignmentService,
-)
-from rest_framework.response import Response
+from deliveries.dispatch.coordinator import DispatchCoordinator
+from deliveries.dispatch.assignment import AssignmentService
+from deliveries.dispatch.exceptions import InvalidOfferState
 
 
+# ==========================================================
+# Admin dispatch endpoints
+# ==========================================================
 
+class TriggerDispatchView(GenericAPIView):
+    """
+    Manually trigger dispatch for a delivery.
 
+    Under the automatic flow, dispatch is already started by
+    DeliveryService.create_delivery -> DispatchCoordinator.delivery_created.
+    This endpoint is a manual/recovery hook for admin use.
+    """
 
-class DispatchDeliveryCreatedView(
-    GenericAPIView,
-):
-    permission_classes = [
-        IsAdminUser,
-    ]
+    permission_classes = [IsAdminUser]
+    serializer_class = DispatchResultSerializer
 
-    serializer_class = (
-        DispatchResultSerializer
-    )
+    def post(self, request, pk):
+        delivery = get_object_or_404(Delivery, pk=pk)
 
-    def post(
-        self,
-        request,
-        pk,
-    ):
-        delivery = get_object_or_404(
-            Delivery,
-            pk=pk,
-        )
-
-        result = (
-            DispatchCoordinator.delivery_created(
-                delivery
-            )
-        )
-
-        serializer = self.get_serializer(
-            result.to_dict()
-        )
+        result = DispatchCoordinator.delivery_created(delivery)
 
         return Response(
-            serializer.data,
+            DispatchResultSerializer(result).data,
             status=(
                 status.HTTP_200_OK
                 if result.success
@@ -69,35 +56,79 @@ class DispatchDeliveryCreatedView(
         )
 
 
-
-class DeliveryOfferResponseView(
-    GenericAPIView,
-):
+class DispatchDeliveryView(GenericAPIView):
     """
-    Rider accepts or rejects
-    a delivery offer.
+    Start or retry dispatch for a delivery.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
+    permission_classes = [IsAdminUser]
+    serializer_class = DispatchResultSerializer
 
-    serializer_class = (
-        DeliveryOfferResponseSerializer
-    )
+    def post(self, request, pk):
+        delivery = get_object_or_404(Delivery, pk=pk)
 
-    def post(
-        self,
-        request,
-        pk,
-    ):
-        serializer = self.get_serializer(
-            data=request.data,
+        result = DispatchCoordinator.dispatch(delivery)
+
+        return Response(
+            DispatchResultSerializer(result).data,
+            status=(
+                status.HTTP_200_OK
+                if result.success
+                else status.HTTP_400_BAD_REQUEST
+            ),
         )
 
-        serializer.is_valid(
-            raise_exception=True,
+
+class ExpireDeliveryOfferView(GenericAPIView):
+    """
+    Force-expire a delivery offer.
+
+    Normally handled automatically by a Celery worker.
+    """
+
+    permission_classes = [IsAdminUser]
+    serializer_class = DispatchResultSerializer
+
+    def post(self, request, pk):
+        offer = get_object_or_404(DeliveryOffer, pk=pk)
+
+        try:
+            result = DispatchCoordinator.offer_expired(offer)
+
+        except InvalidOfferState as exc:
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            DispatchResultSerializer(result).data,
+            status=(
+                status.HTTP_200_OK
+                if result.success
+                else status.HTTP_400_BAD_REQUEST
+            ),
         )
+
+
+# ==========================================================
+# Rider offer response
+# ==========================================================
+
+class DeliveryOfferResponseView(GenericAPIView):
+    """
+    Rider accepts or rejects a delivery offer.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = DeliveryOfferResponseSerializer
+
+    def post(self, request, pk):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         offer = get_object_or_404(
             DeliveryOffer,
@@ -105,219 +136,83 @@ class DeliveryOfferResponseView(
             rider=request.user,
         )
 
-        result = (
-            DispatchCoordinator.respond_to_offer(
-                offer=offer,
-                action=serializer.validated_data[
-                    "action"
-                ],
-                reason=serializer.validated_data.get(
-                    "rejection_reason",
-                    "",
-                ),
-            )
-        )
-
-        response = (
-            DispatchResultSerializer(
-                result,
-            ).data
-        )
-
-        if result.assignment:
-            response["assignment"] = (
-                DeliveryAssignmentSerializer(
-                    result.assignment
-                ).data
-            )
-
-        return Response(
-            response,
-            status=status.HTTP_200_OK,
-        )
-
-
-
-class RetryDispatchView(
-    GenericAPIView,
-):
-    """
-    Retry dispatch for a delivery.
-    """
-
-    permission_classes = [
-        IsAdminUser,
-    ]
-
-    def post(
-        self,
-        request,
-        pk,
-    ):
-        delivery = get_object_or_404(
-            Delivery,
-            pk=pk,
-        )
-
-        result = (
-            DispatchCoordinator.dispatch(
-                delivery,
-            )
+        result = DispatchCoordinator.respond_to_offer(
+            offer=offer,
+            action=serializer.validated_data["action"],
+            rider=request.user,
+            reason=serializer.validated_data.get(
+                "rejection_reason",
+                "",
+            ),
         )
 
         return Response(
-            DispatchResultSerializer(
-                result,
-            ).data,
-            status=status.HTTP_200_OK,
+            DispatchResultSerializer(result).data,
+            status=(
+                status.HTTP_200_OK
+                if result.success
+                else status.HTTP_400_BAD_REQUEST
+            ),
         )
 
 
+# ==========================================================
+# Rider reads
+# ==========================================================
 
-class DispatchDeliveryView(
-    GenericAPIView,
-):
-    """
-    Manually start dispatch.
-    """
-
-    permission_classes = [
-        IsAdminUser,
-    ]
-
-    def post(
-        self,
-        request,
-        pk,
-    ):
-        delivery = get_object_or_404(
-            Delivery,
-            pk=pk,
-        )
-
-        result = (
-            DispatchCoordinator.dispatch(
-                delivery,
-            )
-        )
-
-        return Response(
-            DispatchResultSerializer(
-                result,
-            ).data,
-            status=status.HTTP_200_OK,
-        )
-
-
-
-class ExpireDeliveryOfferView(
-    GenericAPIView,
-):
-    """
-    Force expire a delivery offer.
-
-    Normally handled automatically
-    by Celery.
-    """
-
-    permission_classes = [
-        IsAdminUser,
-    ]
-
-    def post(
-        self,
-        request,
-        pk,
-    ):
-        offer = get_object_or_404(
-            DeliveryOffer,
-            pk=pk,
-        )
-
-        result = (
-            DispatchCoordinator.offer_expired(
-                offer,
-            )
-        )
-
-        response = (
-            DispatchResultSerializer(
-                result,
-            ).data
-        )
-
-        if result.assignment:
-            response["assignment"] = (
-                DeliveryAssignmentSerializer(
-                    result.assignment
-                ).data
-            )
-
-        return Response(
-            response,
-            status=status.HTTP_200_OK,
-        )
-
-
-
-class DeliveryAssignmentDetailView(
-    GenericAPIView,
-):
+class DeliveryAssignmentDetailView(GenericAPIView):
     """
     Retrieve assignment details.
+
+    Visibility (D2-B):
+        - the rider who owns the assignment, or
+        - staff / superuser.
+
+    Customers view assignment information through the
+    delivery detail endpoint, not directly here.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
+    permission_classes = [IsAuthenticated]
+    serializer_class = DeliveryAssignmentSerializer
 
-    serializer_class = (
-        DeliveryAssignmentSerializer
-    )
+    def get(self, request, pk):
+        queryset = DeliveryAssignment.objects.all()
 
-    def get(
-        self,
-        request,
-        pk,
-    ):
-        assignment = get_object_or_404(
-            DeliveryAssignment,
-            pk=pk,
-        )
+        if not (
+            getattr(request.user, "is_staff", False)
+            or getattr(request.user, "is_superuser", False)
+        ):
+            queryset = queryset.filter(rider=request.user)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
+        assignment = get_object_or_404(queryset, pk=pk)
+
+        return Response(self.get_serializer(assignment).data)
 
 
-
-class RiderCurrentAssignmentView(
-    GenericAPIView,
-):
+class RiderCurrentAssignmentView(GenericAPIView):
     """
-    Current active assignment
-    for authenticated rider.
+    Current active assignment for the authenticated rider.
+
+    ASSIGNED is intentionally excluded here:
+
+        - Before acceptance, the rider interacts with the
+          assignment through their DeliveryOffer.
+        - After acceptance, the assignment becomes ACCEPTED
+          and appears here.
+
+    This gives the rider a clean split:
+
+        DeliveryOffersView          -> pre-acceptance
+        RiderCurrentAssignmentView  -> post-acceptance
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
+    permission_classes = [IsAuthenticated]
+    serializer_class = DeliveryAssignmentSerializer
 
-    serializer_class = (
-        DeliveryAssignmentSerializer
-    )
-
-    def get(
-        self,
-        request,
-    ):
+    def get(self, request):
         assignment = (
             DeliveryAssignment.objects
-            .filter(
-                rider=request.user,
-            )
+            .filter(rider=request.user)
             .exclude(
                 status__in=[
                     DeliveryAssignment.AssignmentStatus.COMPLETED,
@@ -325,10 +220,8 @@ class RiderCurrentAssignmentView(
                     DeliveryAssignment.AssignmentStatus.ASSIGNED,
                 ]
             )
-            .select_related(
-                "delivery",
-                "rider",
-            )
+            .select_related("delivery", "rider", "assigned_by")
+            .order_by("-assigned_at")
             .first()
         )
 
@@ -336,24 +229,19 @@ class RiderCurrentAssignmentView(
             return Response(
                 {
                     "success": False,
-                    "message": (
-                        "No active assignment."
-                    ),
+                    "message": "No active assignment.",
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
+        return Response(self.get_serializer(assignment).data)
 
 
 class RiderAssignmentsView(GenericAPIView):
     """
     List assignments for the authenticated rider.
+
+    Pagination is currently not applied.
     """
 
     permission_classes = [IsAuthenticated]
@@ -361,9 +249,8 @@ class RiderAssignmentsView(GenericAPIView):
 
     def get(self, request):
         assignments = (
-            DeliveryAssignment.objects.filter(
-                rider=request.user,
-            )
+            DeliveryAssignment.objects
+            .filter(rider=request.user)
             .select_related(
                 "delivery",
                 "rider",
@@ -372,19 +259,19 @@ class RiderAssignmentsView(GenericAPIView):
             .order_by("-created_at")
         )
 
-        serializer = self.get_serializer(
-            assignments,
-            many=True,
+        return Response(
+            self.get_serializer(
+                assignments,
+                many=True,
+            ).data
         )
-
-        return Response(serializer.data)
-
-
 
 
 class DeliveryOffersView(GenericAPIView):
     """
     List offers belonging to the authenticated rider.
+
+    Pagination is currently not applied.
     """
 
     permission_classes = [IsAuthenticated]
@@ -392,25 +279,21 @@ class DeliveryOffersView(GenericAPIView):
 
     def get(self, request):
         offers = (
-            DeliveryOffer.objects.filter(
-                rider=request.user,
-            )
-            .select_related("delivery")
+            DeliveryOffer.objects
+            .filter(rider=request.user)
+            .select_related("delivery", "rider")
             .order_by("-created_at")
         )
 
         return Response(
-            self.get_serializer(
-                offers,
-                many=True,
-            ).data
+            self.get_serializer(offers, many=True).data
         )
-
 
 
 class DeliveryOfferDetailView(GenericAPIView):
     """
-    Retrieve a delivery offer.
+    Retrieve a delivery offer belonging to the
+    authenticated rider.
     """
 
     permission_classes = [IsAuthenticated]
@@ -423,13 +306,12 @@ class DeliveryOfferDetailView(GenericAPIView):
             rider=request.user,
         )
 
-        return Response(
-            self.get_serializer(
-                offer,
-            ).data
-        )
+        return Response(self.get_serializer(offer).data)
 
 
+# ==========================================================
+# Rider assignment progression
+# ==========================================================
 
 class AcceptAssignmentView(GenericAPIView):
     permission_classes = [IsAuthenticated]
@@ -442,194 +324,138 @@ class AcceptAssignmentView(GenericAPIView):
             rider=request.user,
         )
 
-        assignment = AssignmentService.accept(
-            assignment,
-        )
+        assignment = AssignmentService.accept(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
+        return Response(self.get_serializer(assignment).data)
 
 
 class StartPickupView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.start_pickup(
-            assignment,
-        )
+        assignment = AssignmentService.start_pickup(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
+        return Response(self.get_serializer(assignment).data)
 
 
 class ArrivePickupView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.arrive_pickup(
-            assignment,
-        )
+        assignment = AssignmentService.arrive_pickup(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
+        return Response(self.get_serializer(assignment).data)
 
 
 class PickupCompletedView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.pickup_completed(
-            assignment,
-        )
+        assignment = AssignmentService.pickup_completed(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
+        return Response(self.get_serializer(assignment).data)
 
 
 class StartDeliveryView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.start_delivery(
-            assignment,
-        )
+        assignment = AssignmentService.start_delivery(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
+        return Response(self.get_serializer(assignment).data)
 
 
 class ArriveDestinationView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.arrive_destination(
-            assignment,
-        )
+        assignment = AssignmentService.arrive_destination(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
+        return Response(self.get_serializer(assignment).data)
 
 
 class CompleteDeliveryView(GenericAPIView):
-
     permission_classes = [IsAuthenticated]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
             rider=request.user,
         )
 
-        assignment = AssignmentService.complete(
-            assignment,
-        )
+        assignment = AssignmentService.complete(assignment)
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
+        return Response(self.get_serializer(assignment).data)
 
 
+# ==========================================================
+# Admin assignment cancellation
+# ==========================================================
 
-class CancelAssignmentView(GenericAPIView):
+class AdminCancelAssignmentView(GenericAPIView):
+    """
+    Admin/staff cancellation of an active assignment.
 
-    permission_classes = [IsAuthenticated]
+    Riders cannot cancel assignments (D1-A).
+
+    Cancellation requires a reason and goes through
+    AssignmentService.cancel_by_admin, which is the sole
+    authority for this transition and for restoring rider
+    availability.
+    """
+
+    permission_classes = [IsAdminUser]
     serializer_class = DeliveryAssignmentSerializer
 
     def post(self, request, pk):
-
         assignment = get_object_or_404(
             DeliveryAssignment,
             pk=pk,
-            rider=request.user,
         )
 
-        reason = request.data.get(
-            "reason",
-            "",
-        )
+        reason = request.data.get("reason", "")
 
-        assignment = AssignmentService.cancel(
-            assignment,
+        assignment = AssignmentService.cancel_by_admin(
+            assignment=assignment,
+            cancelled_by=request.user,
             reason=reason,
         )
 
-        return Response(
-            self.get_serializer(
-                assignment,
-            ).data
-        )
-
-
-
+        return Response(self.get_serializer(assignment).data)

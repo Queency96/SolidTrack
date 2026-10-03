@@ -6,9 +6,7 @@ from vendors.models import (
     ProductVariant,
     ProductVariantImage,
 )
-from vendors.serializers.product import (
-    ProductVariantImageSerializer,
-)
+from vendors.serializers.product import ProductVariantImageSerializer
 from vendors.services import ProductVariantImageService
 
 
@@ -22,29 +20,23 @@ class ProductVariantImageListCreateView(
         Only the vendor who owns the parent product can access
         the variant's images.
 
-    Business logic:
-        Primary-image handling and image lifecycle are delegated
+    GET:
+        Returns 404 when the variant is missing or not owned
+        by the authenticated vendor.
+
+    POST:
+        Delegates image creation and primary-image handling
         to ProductVariantImageService.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductVariantImageSerializer
 
     def get_variant(self):
-        """
-        Resolve the variant once and cache it for the request.
-        """
-
         if not hasattr(self, "_variant"):
             self._variant = (
                 ProductVariant.objects
-                .select_related(
-                    "product",
-                    "product__vendor",
-                )
+                .select_related("product", "product__vendor")
                 .filter(
                     pk=self.kwargs["variant_id"],
                     product__vendor__user=self.request.user,
@@ -55,11 +47,6 @@ class ProductVariantImageListCreateView(
         return self._variant
 
     def get_queryset(self):
-        """
-        Return only images belonging to the requested variant
-        and owned by the authenticated vendor.
-        """
-
         variant = self.get_variant()
 
         if variant is None:
@@ -67,31 +54,27 @@ class ProductVariantImageListCreateView(
 
         return (
             ProductVariantImage.objects
-            .filter(
-                variant_id=variant.pk,
-            )
-            .select_related(
-                "variant",
-                "variant__product",
-            )
-            .order_by(
-                "display_order",
-                "created_at",
-            )
+            .filter(variant_id=variant.pk)
+            .select_related("variant", "variant__product")
+            .order_by("display_order", "created_at")
         )
 
-    def perform_create(self, serializer):
+    def list(self, request, *args, **kwargs):
         """
-        Delegate image creation and primary-image handling
-        to the service layer.
+        Return 404 when the parent variant is missing or not
+        owned by the authenticated vendor.
         """
 
+        if self.get_variant() is None:
+            raise NotFound("Product variant not found.")
+
+        return super().list(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
         variant = self.get_variant()
 
         if variant is None:
-            raise NotFound(
-                "Product variant not found."
-            )
+            raise NotFound("Product variant not found.")
 
         image = ProductVariantImageService.create_image(
             variant=variant,
@@ -111,20 +94,10 @@ class ProductVariantImageDetailView(
     to a product owned by the authenticated vendor.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductVariantImageSerializer
 
     def get_queryset(self):
-        """
-        Scope the image queryset to the authenticated vendor.
-
-        This is important because the image ID alone must never
-        be sufficient to access another vendor's image.
-        """
-
         return (
             ProductVariantImage.objects
             .filter(
@@ -136,18 +109,10 @@ class ProductVariantImageDetailView(
                 "variant__product",
                 "variant__product__vendor",
             )
-            .order_by(
-                "display_order",
-                "created_at",
-            )
+            .order_by("display_order", "created_at")
         )
 
     def perform_update(self, serializer):
-        """
-        Delegate update and primary-image enforcement
-        to the service layer.
-        """
-
         image = ProductVariantImageService.update_image(
             image=self.get_object(),
             validated_data=dict(serializer.validated_data),
@@ -156,11 +121,4 @@ class ProductVariantImageDetailView(
         serializer.instance = image
 
     def perform_destroy(self, instance):
-        """
-        Delegate deletion and primary-image replacement
-        to the service layer.
-        """
-
-        ProductVariantImageService.delete_image(
-            image=instance,
-        )
+        ProductVariantImageService.delete_image(image=instance)

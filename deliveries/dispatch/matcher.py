@@ -35,35 +35,15 @@ class RiderMatcher:
         context,
         radius_km=None,
     ):
-        """
-        Return RiderMatch objects ordered by distance
-        from the delivery pickup location.
-
-        Rider eligibility is handled by
-        RiderEligibilityService.
-
-        Distance calculation is handled by
-        DistanceService.
-
-        Rider scoring is handled later by
-        RiderScorer.
-        """
-
         if radius_km is None:
             radius_km = cls.DEFAULT_RADIUS_KM
 
-        radius_km = Decimal(
-            str(radius_km)
-        )
+        radius_km = Decimal(str(radius_km))
 
         if radius_km <= 0:
             return []
 
         delivery = context.delivery
-
-        # ------------------------------------------
-        # Get eligible riders
-        # ------------------------------------------
 
         riders = (
             RiderEligibilityService
@@ -80,88 +60,39 @@ class RiderMatcher:
 
         matches = []
 
-        # ------------------------------------------
-        # Match riders
-        # ------------------------------------------
-
         for rider in riders:
 
-            # --------------------------------------
-            # Exclude previously attempted riders
-            # --------------------------------------
-
-            if cls._should_skip_rider(
-                context=context,
-                rider=rider,
-            ):
+            if cls._should_skip_rider(context=context, rider=rider):
                 continue
 
-            # --------------------------------------
-            # Rider location
-            # --------------------------------------
-
-            location = getattr(
-                rider,
-                "location",
-                None,
-            )
+            location = getattr(rider, "location", None)
 
             if location is None:
                 continue
-
-            # --------------------------------------
-            # Calculate distance
-            # --------------------------------------
 
             distance = cls._calculate_distance(
                 delivery=delivery,
                 rider=rider,
             )
 
-            # --------------------------------------
-            # Radius filter
-            # --------------------------------------
-
             if distance > radius_km:
                 continue
 
-            # --------------------------------------
-            # Active workload
-            # --------------------------------------
-
             active_delivery_count = int(
-                getattr(
-                    rider,
-                    "active_delivery_count",
-                    0,
-                )
-                or 0
+                getattr(rider, "active_delivery_count", 0) or 0
             )
 
-            # --------------------------------------
-            # Create RiderMatch
-            # --------------------------------------
-
+            # NOTE: RiderMatch uses `distance_km`, not `distance`.
             match = RiderMatch(
                 rider=rider,
-                distance=distance,
+                distance_km=distance,
                 search_radius=radius_km,
-                active_delivery_count=(
-                    active_delivery_count
-                ),
+                active_delivery_count=active_delivery_count,
             )
 
-            matches.append(
-                match,
-            )
+            matches.append(match)
 
-        # ------------------------------------------
-        # Nearest first
-        # ------------------------------------------
-
-        matches.sort(
-            key=lambda match: match.distance,
-        )
+        matches.sort(key=lambda match: match.distance_km)
 
         return matches
 
@@ -175,14 +106,7 @@ class RiderMatcher:
         context,
         rider,
     ):
-        """
-        Determine whether a rider should be excluded
-        from the current dispatch attempt.
-        """
-
-        return context.is_rider_excluded(
-            rider,
-        )
+        return context.is_rider_excluded(rider)
 
     # ==================================================
     # Calculate Distance
@@ -196,13 +120,12 @@ class RiderMatcher:
         """
         Calculate the distance between the rider
         and the delivery pickup location.
+
+        Pickup coordinates come from the delivery's
+        pickup address, not from the Delivery row itself.
         """
 
-        location = getattr(
-            rider,
-            "location",
-            None,
-        )
+        location = getattr(rider, "location", None)
 
         if location is None:
             raise ValueError(
@@ -210,23 +133,19 @@ class RiderMatcher:
                 "without a rider location."
             )
 
-        distance = (
-            DistanceService.calculate_distance(
-                pickup_lat=(
-                    delivery.pickup_latitude
-                ),
-                pickup_lng=(
-                    delivery.pickup_longitude
-                ),
-                destination_lat=(
-                    location.latitude
-                ),
-                destination_lng=(
-                    location.longitude
-                ),
+        pickup = delivery.pickup_location
+
+        if not pickup:
+            raise ValueError(
+                "Cannot calculate rider distance without "
+                "a pickup location on the delivery."
             )
+
+        distance = DistanceService.calculate_distance(
+            pickup_lat=pickup["latitude"],
+            pickup_lng=pickup["longitude"],
+            destination_lat=location.latitude,
+            destination_lng=location.longitude,
         )
 
-        return Decimal(
-            str(distance)
-        )
+        return Decimal(str(distance))

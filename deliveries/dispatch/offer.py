@@ -109,6 +109,18 @@ class DeliveryOfferService:
 
         Assignment lifecycle remains exclusively owned by
         AssignmentService.
+
+        Concurrency
+        -----------
+        The model-level partial unique constraint
+        (delivery, rider, status=PENDING) is the authoritative
+        backstop against duplicate pending offers.
+
+        A concurrent race may surface an IntegrityError from
+        DeliveryOffer.objects.create(). That error is NOT caught
+        here. DispatchPipeline.create-offer handling is the
+        correct layer to translate it into a rider-level
+        exclusion.
         """
 
         # --------------------------------------------------------
@@ -129,27 +141,19 @@ class DeliveryOfferService:
         # Normalize timeout
         # --------------------------------------------------------
 
-        timeout = cls._validate_timeout(
-            timeout
-        )
+        timeout = cls._validate_timeout(timeout)
 
         # --------------------------------------------------------
         # Normalize search radius
         # --------------------------------------------------------
 
-        radius = cls._validate_radius(
-            radius
-        )
+        radius = cls._validate_radius(radius)
 
         # --------------------------------------------------------
         # Validate rider primary key
         # --------------------------------------------------------
 
-        rider_id = getattr(
-            rider,
-            "pk",
-            None,
-        )
+        rider_id = getattr(rider, "pk", None)
 
         if rider_id is None:
             raise InvalidOfferState(
@@ -168,27 +172,24 @@ class DeliveryOfferService:
         #     Offer / Assignment
         #         ↓
         #     RiderProfile
-        #
-        # This prevents inconsistent locking across services.
         # --------------------------------------------------------
 
-        delivery = cls._lock_delivery(
-            delivery
-        )
+        delivery = cls._lock_delivery(delivery)
 
         # --------------------------------------------------------
         # Validate delivery
         # --------------------------------------------------------
 
-        cls._validate_delivery(
-            delivery
-        )
+        cls._validate_delivery(delivery)
 
         # --------------------------------------------------------
-        # Prevent duplicate pending offer
+        # Prevent duplicate pending offer (friendly pre-check)
         #
         # Delivery is already locked, so all callers using this
         # service serialize offer creation for this delivery.
+        #
+        # The model-level partial unique constraint is the
+        # authoritative backstop.
         # --------------------------------------------------------
 
         existing_offer = (
@@ -213,9 +214,7 @@ class DeliveryOfferService:
 
         now = timezone.now()
 
-        expires_at = now + timedelta(
-            seconds=timeout
-        )
+        expires_at = now + timedelta(seconds=timeout)
 
         # --------------------------------------------------------
         # Create offer
@@ -260,23 +259,10 @@ class DeliveryOfferService:
         ----------
         Delivery is locked before Offer.
 
-        This follows the project's global locking convention:
-
-            Delivery
-                ↓
-            Offer / Assignment
-                ↓
-            RiderProfile
-
         Returns
         -------
         DeliveryOffer
             The accepted offer.
-
-        Raises
-        ------
-        InvalidOfferState
-            If the offer is missing, expired, or no longer pending.
         """
 
         # --------------------------------------------------------
@@ -288,11 +274,7 @@ class DeliveryOfferService:
                 "Delivery offer is required."
             )
 
-        offer_id = getattr(
-            offer,
-            "pk",
-            None,
-        )
+        offer_id = getattr(offer, "pk", None)
 
         if offer_id is None:
             raise InvalidOfferState(
@@ -309,9 +291,7 @@ class DeliveryOfferService:
             offer_snapshot = (
                 DeliveryOffer.objects
                 .select_related("delivery")
-                .get(
-                    pk=offer_id
-                )
+                .get(pk=offer_id)
             )
 
         except DeliveryOffer.DoesNotExist as exc:
@@ -331,9 +311,7 @@ class DeliveryOfferService:
         # Lock offer SECOND
         # --------------------------------------------------------
 
-        locked_offer = cls._lock_offer(
-            offer_id
-        )
+        locked_offer = cls._lock_offer(offer_id)
 
         # --------------------------------------------------------
         # Ensure offer belongs to the locked delivery
@@ -366,9 +344,7 @@ class DeliveryOfferService:
         # because AssignmentService will reuse that assignment.
         # --------------------------------------------------------
 
-        cls._validate_delivery(
-            delivery
-        )
+        cls._validate_delivery(delivery)
 
         # --------------------------------------------------------
         # Mark offer accepted
@@ -412,9 +388,7 @@ class DeliveryOfferService:
         # Lock offer
         # --------------------------------------------------------
 
-        offer = cls._lock_offer(
-            offer
-        )
+        offer = cls._lock_offer(offer)
 
         # --------------------------------------------------------
         # Validate offer
@@ -464,18 +438,13 @@ class DeliveryOfferService:
             EXPIRED
 
         No assignment is created.
-
-        Expiration does not consume the maximum rider assignment
-        allowance.
         """
 
         # --------------------------------------------------------
         # Lock offer
         # --------------------------------------------------------
 
-        offer = cls._lock_offer(
-            offer
-        )
+        offer = cls._lock_offer(offer)
 
         # --------------------------------------------------------
         # Validate status
@@ -540,8 +509,6 @@ class DeliveryOfferService:
             - redispatch
             - send notifications
 
-        Those responsibilities belong elsewhere.
-
         An accepted offer cannot be cancelled through this method.
         """
 
@@ -549,9 +516,7 @@ class DeliveryOfferService:
         # Lock offer
         # --------------------------------------------------------
 
-        offer = cls._lock_offer(
-            offer
-        )
+        offer = cls._lock_offer(offer)
 
         # --------------------------------------------------------
         # Validate offer
@@ -583,7 +548,7 @@ class DeliveryOfferService:
         The returned object is the database-authoritative
         version of the offer.
 
-        This method accepts either:
+        Accepts either:
 
             DeliveryOffer instance
             DeliveryOffer primary key
@@ -594,43 +559,22 @@ class DeliveryOfferService:
                 "Delivery offer is required."
             )
 
-        # --------------------------------------------------------
-        # Resolve primary key
-        # --------------------------------------------------------
-
-        if isinstance(
-            offer,
-            DeliveryOffer,
-        ):
+        if isinstance(offer, DeliveryOffer):
             offer_id = offer.pk
-
         else:
-            offer_id = getattr(
-                offer,
-                "pk",
-                offer,
-            )
+            offer_id = getattr(offer, "pk", offer)
 
         if offer_id is None:
             raise InvalidOfferState(
                 "Invalid delivery offer."
             )
 
-        # --------------------------------------------------------
-        # Lock row
-        # --------------------------------------------------------
-
         try:
             return (
                 DeliveryOffer.objects
                 .select_for_update()
-                .select_related(
-                    "delivery",
-                    "rider",
-                )
-                .get(
-                    pk=offer_id
-                )
+                .select_related("delivery", "rider")
+                .get(pk=offer_id)
             )
 
         except DeliveryOffer.DoesNotExist as exc:
@@ -650,7 +594,11 @@ class DeliveryOfferService:
         Delivery acts as the synchronization point for
         dispatch and assignment operations.
 
-        The method accepts either:
+        select_related mirrors the coordinator / AssignmentService
+        lock shape so related rows are already available without
+        extra queries.
+
+        Accepts either:
 
             Delivery instance
             Delivery primary key
@@ -661,32 +609,23 @@ class DeliveryOfferService:
                 "Delivery is required."
             )
 
-        # --------------------------------------------------------
-        # Resolve primary key
-        # --------------------------------------------------------
-
-        delivery_id = getattr(
-            delivery,
-            "pk",
-            delivery,
-        )
+        delivery_id = getattr(delivery, "pk", delivery)
 
         if delivery_id is None:
             raise InvalidOfferState(
                 "Invalid delivery."
             )
 
-        # --------------------------------------------------------
-        # Lock row
-        # --------------------------------------------------------
-
         try:
             return (
                 Delivery.objects
                 .select_for_update()
-                .get(
-                    pk=delivery_id
+                .select_related(
+                    "customer",
+                    "vendor",
+                    "pickup_store",
                 )
+                .get(pk=delivery_id)
             )
 
         except Delivery.DoesNotExist as exc:
@@ -779,19 +718,11 @@ class DeliveryOfferService:
                 "Delivery offer is required."
             )
 
-        # --------------------------------------------------------
-        # Prevent transition back to PENDING
-        # --------------------------------------------------------
-
         if status == DeliveryOffer.Status.PENDING:
             raise InvalidOfferState(
                 "Lifecycle update cannot transition "
                 "an offer back to PENDING."
             )
-
-        # --------------------------------------------------------
-        # Terminal states
-        # --------------------------------------------------------
 
         terminal_statuses = {
             DeliveryOffer.Status.ACCEPTED,
@@ -799,10 +730,6 @@ class DeliveryOfferService:
             DeliveryOffer.Status.EXPIRED,
             DeliveryOffer.Status.CANCELLED,
         }
-
-        # --------------------------------------------------------
-        # Prevent terminal → terminal transitions
-        # --------------------------------------------------------
 
         if (
             offer.status in terminal_statuses
@@ -814,75 +741,35 @@ class DeliveryOfferService:
                 f"changed to '{status}'."
             )
 
-        # --------------------------------------------------------
-        # Prevent same-status update
-        # --------------------------------------------------------
-
         if offer.status == status:
             raise InvalidOfferState(
                 f"Offer is already in status '{status}'."
             )
-
-        # --------------------------------------------------------
-        # Update status
-        # --------------------------------------------------------
 
         now = timezone.now()
 
         offer.status = status
         offer.responded_at = now
 
-        update_fields = [
-            "status",
-            "responded_at",
-        ]
-
-        # --------------------------------------------------------
-        # Additional fields
-        # --------------------------------------------------------
+        update_fields = ["status", "responded_at"]
 
         for field_name, value in extra_fields.items():
 
-            if not hasattr(
-                offer,
-                field_name,
-            ):
+            if not hasattr(offer, field_name):
                 raise InvalidOfferState(
                     f"DeliveryOffer does not have "
                     f"field '{field_name}'."
                 )
 
-            setattr(
-                offer,
-                field_name,
-                value,
-            )
+            setattr(offer, field_name, value)
+            update_fields.append(field_name)
 
-            update_fields.append(
-                field_name
-            )
-
-        # --------------------------------------------------------
-        # updated_at
-        # --------------------------------------------------------
-
-        if hasattr(
-            offer,
-            "updated_at",
-        ):
-            update_fields.append(
-                "updated_at"
-            )
-
-        # --------------------------------------------------------
-        # Save
-        # --------------------------------------------------------
+        if hasattr(offer, "updated_at"):
+            update_fields.append("updated_at")
 
         offer.save(
             update_fields=list(
-                dict.fromkeys(
-                    update_fields
-                )
+                dict.fromkeys(update_fields)
             )
         )
 
@@ -919,7 +806,7 @@ class DeliveryOfferService:
         This method does NOT create or reuse assignments.
 
         AssignmentService remains the final authority for
-        assignment creation/reuse and rider assignment limits.
+        assignment creation/reuse.
         """
 
         if delivery is None:
@@ -944,38 +831,17 @@ class DeliveryOfferService:
             )
 
         # --------------------------------------------------------
-        # Existing direct rider
-        #
-        # Some Delivery implementations may expose rider_id.
-        #
-        # If populated, the delivery is already assigned and
-        # therefore cannot receive another offer.
-        # --------------------------------------------------------
-
-        rider_id = getattr(
-            delivery,
-            "rider_id",
-            None,
-        )
-
-        if rider_id:
-            raise InvalidOfferState(
-                "Delivery already has a rider assigned."
-            )
-
-        # --------------------------------------------------------
         # Locate lifetime assignment
         #
-        # The project architecture permits at most one
-        # DeliveryAssignment row during the delivery lifetime.
+        # DeliveryAssignment.delivery is a OneToOneField.
+        # There is at most one row. .first() is sufficient.
+        #
+        # Delivery has NO `rider` attribute — do not reference it.
         # --------------------------------------------------------
 
         assignment = (
             DeliveryAssignment.objects
-            .filter(
-                delivery_id=delivery.pk,
-            )
-            .order_by("-pk")
+            .filter(delivery_id=delivery.pk)
             .first()
         )
 
@@ -985,10 +851,6 @@ class DeliveryOfferService:
 
         if assignment is None:
             return
-
-        # --------------------------------------------------------
-        # Existing assignment status
-        # --------------------------------------------------------
 
         assignment_status = assignment.status
 
@@ -1024,8 +886,6 @@ class DeliveryOfferService:
 
         # --------------------------------------------------------
         # COMPLETED assignment
-        #
-        # A completed assignment can never be reused.
         # --------------------------------------------------------
 
         if (
@@ -1039,18 +899,6 @@ class DeliveryOfferService:
 
         # --------------------------------------------------------
         # Any other assignment state is considered active.
-        #
-        # Examples include:
-        #
-        #     ASSIGNED
-        #     ACCEPTED
-        #     EN_ROUTE_PICKUP
-        #     ARRIVED_PICKUP
-        #     PICKED_UP
-        #     OUT_FOR_DELIVERY
-        #     ARRIVED_DESTINATION
-        #
-        # These states must never receive another offer.
         # --------------------------------------------------------
 
         raise InvalidOfferState(
@@ -1087,14 +935,8 @@ class DeliveryOfferService:
                 "Offer timeout is required."
             )
 
-        # --------------------------------------------------------
-        # Decimal normalization
-        # --------------------------------------------------------
-
         try:
-            normalized = Decimal(
-                str(timeout)
-            )
+            normalized = Decimal(str(timeout))
 
         except (
             InvalidOperation,
@@ -1105,18 +947,15 @@ class DeliveryOfferService:
                 "Offer timeout must be a valid number."
             ) from exc
 
-        # --------------------------------------------------------
-        # Positive value
-        # --------------------------------------------------------
+        if not normalized.is_finite():
+            raise InvalidOfferState(
+                "Offer timeout must be a finite number."
+            )
 
         if normalized <= Decimal("0"):
             raise InvalidOfferState(
                 "Offer timeout must be greater than zero."
             )
-
-        # --------------------------------------------------------
-        # Whole seconds only
-        # --------------------------------------------------------
 
         if normalized != normalized.to_integral_value():
             raise InvalidOfferState(
@@ -1124,13 +963,7 @@ class DeliveryOfferService:
                 "number of seconds."
             )
 
-        # --------------------------------------------------------
-        # Convert to integer
-        # --------------------------------------------------------
-
-        timeout_seconds = int(
-            normalized
-        )
+        timeout_seconds = int(normalized)
 
         if timeout_seconds <= 0:
             raise InvalidOfferState(
@@ -1160,9 +993,7 @@ class DeliveryOfferService:
             )
 
         try:
-            radius = Decimal(
-                str(radius)
-            )
+            radius = Decimal(str(radius))
 
         except (
             InvalidOperation,
@@ -1172,6 +1003,11 @@ class DeliveryOfferService:
             raise InvalidOfferState(
                 "Search radius must be a valid number."
             ) from exc
+
+        if not radius.is_finite():
+            raise InvalidOfferState(
+                "Search radius must be a finite number."
+            )
 
         if radius <= Decimal("0"):
             raise InvalidOfferState(

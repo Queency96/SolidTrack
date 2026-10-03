@@ -51,13 +51,9 @@ class DeliveryBookingSerializer(serializers.ModelSerializer):
 
     package = PackageSerializer()
 
-    pickup = DeliveryAddressSerializer(
-        write_only=True,
-    )
+    pickup = DeliveryAddressSerializer(write_only=True)
 
-    destination = DeliveryAddressSerializer(
-        write_only=True,
-    )
+    destination = DeliveryAddressSerializer(write_only=True)
 
     class Meta:
         model = Delivery
@@ -158,9 +154,7 @@ class DeliverySerializer(serializers.ModelSerializer):
 # Delivery Assignment
 # ============================================================
 
-class DeliveryAssignmentSerializer(
-    serializers.ModelSerializer,
-):
+class DeliveryAssignmentSerializer(serializers.ModelSerializer):
 
     rider_name = serializers.CharField(
         source="rider.get_full_name",
@@ -196,9 +190,7 @@ class DeliveryAssignmentSerializer(
 # Delivery Offer
 # ============================================================
 
-class DeliveryOfferSerializer(
-    serializers.ModelSerializer,
-):
+class DeliveryOfferSerializer(serializers.ModelSerializer):
 
     rider_name = serializers.CharField(
         source="rider.get_full_name",
@@ -249,11 +241,7 @@ class PriceEstimateSerializer(serializers.Serializer):
     )
 
     package_size = serializers.ChoiceField(
-        choices=[
-            "SMALL",
-            "MEDIUM",
-            "LARGE",
-        ],
+        choices=["SMALL", "MEDIUM", "LARGE"],
     )
 
     weight = serializers.DecimalField(
@@ -262,12 +250,7 @@ class PriceEstimateSerializer(serializers.Serializer):
     )
 
     vehicle_type = serializers.ChoiceField(
-        choices=[
-            "BIKE",
-            "CAR",
-            "VAN",
-            "TRUCK",
-        ],
+        choices=["BIKE", "CAR", "VAN", "TRUCK"],
     )
 
     delivery_type = serializers.ChoiceField(
@@ -281,18 +264,14 @@ class PriceEstimateSerializer(serializers.Serializer):
         default=0,
     )
 
-    insurance = serializers.BooleanField(
-        default=False,
-    )
+    insurance = serializers.BooleanField(default=False)
 
 
 # ============================================================
 # Delivery Offer Response
 # ============================================================
 
-class DeliveryOfferResponseSerializer(
-    serializers.Serializer,
-):
+class DeliveryOfferResponseSerializer(serializers.Serializer):
 
     action = serializers.ChoiceField(
         choices=DeliveryOfferAction.CHOICES,
@@ -306,8 +285,7 @@ class DeliveryOfferResponseSerializer(
     def validate(self, attrs):
 
         if (
-            attrs["action"]
-            == DeliveryOfferAction.REJECT
+            attrs["action"] == DeliveryOfferAction.REJECT
             and not attrs.get("rejection_reason")
         ):
             raise serializers.ValidationError(
@@ -324,19 +302,15 @@ class DeliveryOfferResponseSerializer(
 # Dispatch Result
 # ============================================================
 
-class DispatchResultSerializer(
-    serializers.Serializer,
-):
+class DispatchResultSerializer(serializers.Serializer):
+
     success = serializers.BooleanField()
 
     status = serializers.CharField()
 
     message = serializers.CharField()
 
-    delivery = DeliverySerializer(
-        read_only=True,
-        allow_null=True,
-    )
+    delivery = DeliverySerializer(read_only=True, allow_null=True)
 
     assignment = DeliveryAssignmentSerializer(
         read_only=True,
@@ -360,19 +334,27 @@ class DispatchResultSerializer(
 
     def to_representation(self, instance):
 
+        status = instance.status
+
+        if hasattr(status, "value"):
+            status = status.value
+
         return {
             "success": instance.success,
-            "status": instance.status,
+            "status": str(status),
             "message": instance.message,
-            "delivery": DeliverySerializer(
-                instance.delivery
-            ).data if instance.delivery else None,
-            "assignment": DeliveryAssignmentSerializer(
-                instance.assignment
-            ).data if instance.assignment else None,
-            "offer": DeliveryOfferSerializer(
-                instance.offer
-            ).data if instance.offer else None,
+            "delivery": (
+                DeliverySerializer(instance.delivery).data
+                if instance.delivery else None
+            ),
+            "assignment": (
+                DeliveryAssignmentSerializer(instance.assignment).data
+                if instance.assignment else None
+            ),
+            "offer": (
+                DeliveryOfferSerializer(instance.offer).data
+                if instance.offer else None
+            ),
             "errors": instance.errors,
             "warnings": instance.warnings,
             "data": instance.data,

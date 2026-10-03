@@ -30,18 +30,14 @@ class DispatchConfigurationService:
             If no active configuration exists.
         """
 
-        config = cache.get(
-            cls.CACHE_KEY,
-        )
+        config = cache.get(cls.CACHE_KEY)
 
         if config is not None:
             return config
 
         config = (
             DispatchConfiguration.objects
-            .filter(
-                is_active=True,
-            )
+            .filter(is_active=True)
             .first()
         )
 
@@ -57,3 +53,24 @@ class DispatchConfigurationService:
         )
 
         return config
+
+    # ==================================================
+    # Get Active Config (coordinator-compatible)
+    # ==================================================
+
+    @classmethod
+    def get_active_config(cls):
+        """
+        Coordinator-compatible alias.
+
+        Returns None when no active configuration exists,
+        so callers can decide how to handle the missing
+        configuration. get_configuration() retains the
+        raising behaviour for callers that depend on it.
+        """
+
+        try:
+            return cls.get_configuration()
+
+        except DispatchConfigurationError:
+            return None

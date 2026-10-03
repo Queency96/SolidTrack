@@ -1,14 +1,6 @@
-from django.db import models
-from django.conf import settings
-from common.models import TimeStampedModel
 import uuid
-
-
-import uuid
-
 from django.conf import settings
 from django.db import models
-
 from common.models import TimeStampedModel
 
 
@@ -18,6 +10,7 @@ class RiderProfile(TimeStampedModel):
         BIKE = "BIKE", "Bike"
         CAR = "CAR", "Car"
         VAN = "VAN", "Van"
+        TRUCK = "TRUCK", "Truck"
 
     class VerificationStatus(models.TextChoices):
         PENDING = "PENDING", "Pending"

@@ -48,6 +48,7 @@ class DeliveryAssignment(TimeStampedModel):
         DeliveryAssignment #2
 
     The OneToOneField is the database-level enforcement.
+    No additional UniqueConstraint is required or permitted.
 
     ================================================================
     ASSIGNMENT REUSE
@@ -85,65 +86,21 @@ class DeliveryAssignment(TimeStampedModel):
 
     class AssignmentStatus(models.TextChoices):
 
-        PENDING = (
-            "PENDING",
-            "Pending",
-        )
-
-        ASSIGNED = (
-            "ASSIGNED",
-            "Assigned",
-        )
-
-        ACCEPTED = (
-            "ACCEPTED",
-            "Accepted",
-        )
-
-        EN_ROUTE_PICKUP = (
-            "EN_ROUTE_PICKUP",
-            "En Route to Pickup",
-        )
-
-        ARRIVED_PICKUP = (
-            "ARRIVED_PICKUP",
-            "Arrived at Pickup",
-        )
-
-        PICKED_UP = (
-            "PICKED_UP",
-            "Picked Up",
-        )
-
-        OUT_FOR_DELIVERY = (
-            "OUT_FOR_DELIVERY",
-            "Out for Delivery",
-        )
-
+        PENDING = ("PENDING", "Pending")
+        ASSIGNED = ("ASSIGNED", "Assigned")
+        ACCEPTED = ("ACCEPTED", "Accepted")
+        EN_ROUTE_PICKUP = ("EN_ROUTE_PICKUP", "En Route to Pickup")
+        ARRIVED_PICKUP = ("ARRIVED_PICKUP", "Arrived at Pickup")
+        PICKED_UP = ("PICKED_UP", "Picked Up")
+        OUT_FOR_DELIVERY = ("OUT_FOR_DELIVERY", "Out for Delivery")
         ARRIVED_DESTINATION = (
             "ARRIVED_DESTINATION",
             "Arrived at Destination",
         )
-
-        COMPLETED = (
-            "COMPLETED",
-            "Completed",
-        )
-
-        REJECTED = (
-            "REJECTED",
-            "Rejected",
-        )
-
-        CANCELLED = (
-            "CANCELLED",
-            "Cancelled",
-        )
-
-        FAILED = (
-            "FAILED",
-            "Failed",
-        )
+        COMPLETED = ("COMPLETED", "Completed")
+        REJECTED = ("REJECTED", "Rejected")
+        CANCELLED = ("CANCELLED", "Cancelled")
+        FAILED = ("FAILED", "Failed")
 
     # ============================================================
     # PRIMARY KEY
@@ -158,14 +115,20 @@ class DeliveryAssignment(TimeStampedModel):
     # ============================================================
     # DELIVERY
     # ============================================================
+    #
+    # OneToOneField is the sole database-level enforcement of the
+    # one-assignment-per-delivery lifetime rule.
+    #
+    # Do NOT add UniqueConstraint(fields=["delivery"]) — it is
+    # redundant and can conflict with the OneToOne implicit unique
+    # index in migration history.
+    # ============================================================
 
     delivery = models.OneToOneField(
         Delivery,
         on_delete=models.PROTECT,
         related_name="assignment",
-        help_text=(
-            "The single lifetime assignment for this delivery."
-        ),
+        help_text="The single lifetime assignment for this delivery.",
     )
 
     # ============================================================
@@ -218,87 +181,31 @@ class DeliveryAssignment(TimeStampedModel):
     # LIFECYCLE TIMESTAMPS
     # ============================================================
 
-    assigned_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    accepted_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    rejected_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    en_route_pickup_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    arrived_pickup_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    picked_up_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    out_for_delivery_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    arrived_destination_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    completed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    cancelled_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    failed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    en_route_pickup_at = models.DateTimeField(null=True, blank=True)
+    arrived_pickup_at = models.DateTimeField(null=True, blank=True)
+    picked_up_at = models.DateTimeField(null=True, blank=True)
+    out_for_delivery_at = models.DateTimeField(null=True, blank=True)
+    arrived_destination_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
 
     # ============================================================
     # REJECTION / CANCELLATION / FAILURE REASONS
     # ============================================================
 
-    rejection_reason = models.TextField(
-        blank=True,
-        default="",
-    )
-
-    cancellation_reason = models.TextField(
-        blank=True,
-        default="",
-    )
-
-    failure_reason = models.TextField(
-        blank=True,
-        default="",
-    )
+    rejection_reason = models.TextField(blank=True, default="")
+    cancellation_reason = models.TextField(blank=True, default="")
+    failure_reason = models.TextField(blank=True, default="")
 
     # ============================================================
     # NOTES
     # ============================================================
 
-    notes = models.TextField(
-        blank=True,
-        default="",
-    )
+    notes = models.TextField(blank=True, default="")
 
     # ============================================================
     # META
@@ -306,55 +213,31 @@ class DeliveryAssignment(TimeStampedModel):
 
     class Meta:
 
-        constraints = [
-            models.UniqueConstraint(
-                fields=["delivery"],
-                name="unique_delivery_assignment",
-            ),
-        ]
-
-        ordering = [
-            "-assigned_at",
-        ]
+        ordering = ["-assigned_at"]
 
         indexes = [
             models.Index(
-                fields=[
-                    "delivery",
-                    "status",
-                ],
+                fields=["delivery", "status"],
                 name="assignment_delivery_status_idx",
             ),
             models.Index(
-                fields=[
-                    "rider",
-                    "status",
-                ],
+                fields=["rider", "status"],
                 name="assignment_rider_status_idx",
             ),
             models.Index(
-                fields=[
-                    "rider",
-                    "is_active",
-                ],
+                fields=["rider", "is_active"],
                 name="assignment_rider_active_idx",
             ),
             models.Index(
-                fields=[
-                    "status",
-                ],
+                fields=["status"],
                 name="assignment_status_idx",
             ),
             models.Index(
-                fields=[
-                    "is_active",
-                ],
+                fields=["is_active"],
                 name="assignment_active_idx",
             ),
             models.Index(
-                fields=[
-                    "assigned_at",
-                ],
+                fields=["assigned_at"],
                 name="assignment_assigned_at_idx",
             ),
         ]
@@ -367,11 +250,7 @@ class DeliveryAssignment(TimeStampedModel):
 
         rider_name = (
             self.rider.get_full_name()
-            or getattr(
-                self.rider,
-                "email",
-                None,
-            )
+            or getattr(self.rider, "email", None)
             or str(self.rider_id)
         )
 
@@ -381,9 +260,7 @@ class DeliveryAssignment(TimeStampedModel):
             str(self.delivery_id),
         )
 
-        return (
-            f"{tracking_number} → {rider_name}"
-        )
+        return f"{tracking_number} → {rider_name}"
 
     # ============================================================
     # VALIDATION
@@ -391,64 +268,43 @@ class DeliveryAssignment(TimeStampedModel):
 
     def clean(self):
 
-        # ========================================================
+        # --------------------------------------------------------
         # DELIVERY
-        # ========================================================
+        # --------------------------------------------------------
 
         if self.delivery_id is None:
-
             raise ValidationError(
-                {
-                    "delivery": (
-                        "An assignment must belong "
-                        "to a delivery."
-                    )
-                }
+                {"delivery": "An assignment must belong to a delivery."}
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # RIDER
-        # ========================================================
+        # --------------------------------------------------------
 
         if self.rider_id is None:
-
             raise ValidationError(
-                {
-                    "rider": (
-                        "An assignment must have "
-                        "a rider."
-                    )
-                }
+                {"rider": "An assignment must have a rider."}
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # RIDER ROLE
-        # ========================================================
+        # --------------------------------------------------------
 
-        if hasattr(
-            self.rider,
-            "role",
-        ):
-
-            rider_role = str(
-                self.rider.role
-            ).upper()
-
+        if hasattr(self.rider, "role"):
+            rider_role = str(self.rider.role).upper()
             if rider_role != "RIDER":
-
                 raise ValidationError(
                     {
                         "rider": (
-                            "Only users with the RIDER "
-                            "role can be assigned to "
-                            "deliveries."
+                            "Only users with the RIDER role can be "
+                            "assigned to deliveries."
                         )
                     }
                 )
 
-        # ========================================================
+        # --------------------------------------------------------
         # TERMINAL ASSIGNMENT CANNOT BE ACTIVE
-        # ========================================================
+        # --------------------------------------------------------
 
         terminal_statuses = {
             self.AssignmentStatus.COMPLETED,
@@ -457,96 +313,71 @@ class DeliveryAssignment(TimeStampedModel):
             self.AssignmentStatus.FAILED,
         }
 
-        if (
-            self.is_active
-            and self.status in terminal_statuses
-        ):
-
+        if self.is_active and self.status in terminal_statuses:
             raise ValidationError(
                 {
                     "is_active": (
-                        "A terminal assignment "
-                        "cannot remain active."
+                        "A terminal assignment cannot remain active."
                     )
                 }
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # COMPLETED
-        # ========================================================
+        # --------------------------------------------------------
 
         if (
-            self.status
-            == self.AssignmentStatus.COMPLETED
+            self.status == self.AssignmentStatus.COMPLETED
             and self.completed_at is None
         ):
-
             raise ValidationError(
                 {
                     "completed_at": (
-                        "Completed timestamp is required "
-                        "for a completed assignment."
+                        "Completed timestamp is required for a "
+                        "completed assignment."
                     )
                 }
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # REJECTED
-        # ========================================================
+        # --------------------------------------------------------
 
         if (
-            self.status
-            == self.AssignmentStatus.REJECTED
+            self.status == self.AssignmentStatus.REJECTED
             and self.rejected_at is None
         ):
-
             raise ValidationError(
-                {
-                    "rejected_at": (
-                        "Rejected timestamp is required."
-                    )
-                }
+                {"rejected_at": "Rejected timestamp is required."}
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # CANCELLED
-        # ========================================================
+        # --------------------------------------------------------
 
         if (
-            self.status
-            == self.AssignmentStatus.CANCELLED
+            self.status == self.AssignmentStatus.CANCELLED
             and self.cancelled_at is None
         ):
-
             raise ValidationError(
-                {
-                    "cancelled_at": (
-                        "Cancelled timestamp is required."
-                    )
-                }
+                {"cancelled_at": "Cancelled timestamp is required."}
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # FAILED
-        # ========================================================
+        # --------------------------------------------------------
 
         if (
-            self.status
-            == self.AssignmentStatus.FAILED
+            self.status == self.AssignmentStatus.FAILED
             and self.failed_at is None
         ):
-
             raise ValidationError(
-                {
-                    "failed_at": (
-                        "Failed timestamp is required."
-                    )
-                }
+                {"failed_at": "Failed timestamp is required."}
             )
 
-        # ========================================================
+        # --------------------------------------------------------
         # ACCEPTED / OPERATIONAL STATES
-        # ========================================================
+        # --------------------------------------------------------
 
         accepted_states = {
             self.AssignmentStatus.ACCEPTED,
@@ -562,13 +393,11 @@ class DeliveryAssignment(TimeStampedModel):
             self.status in accepted_states
             and self.accepted_at is None
         ):
-
             raise ValidationError(
                 {
                     "accepted_at": (
-                        "Accepted timestamp is required "
-                        "after the rider accepts the "
-                        "assignment."
+                        "Accepted timestamp is required after the "
+                        "rider accepts the assignment."
                     )
                 }
             )
@@ -577,18 +406,9 @@ class DeliveryAssignment(TimeStampedModel):
     # SAVE
     # ============================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
-
+    def save(self, *args, **kwargs):
         self.full_clean()
-
-        return super().save(
-            *args,
-            **kwargs,
-        )
+        return super().save(*args, **kwargs)
 
     # ============================================================
     # PROPERTIES
@@ -596,27 +416,37 @@ class DeliveryAssignment(TimeStampedModel):
 
     @property
     def is_pending(self):
-
-        return (
-            self.status
-            == self.AssignmentStatus.PENDING
-        )
+        return self.status == self.AssignmentStatus.PENDING
 
     # ------------------------------------------------------------
 
     @property
     def is_assigned(self):
+        """
+        True for any post-assignment, non-terminal state.
 
-        return (
-            self.status
-            == self.AssignmentStatus.ASSIGNED
-        )
+        A rider who has accepted, is en route, has picked up, or
+        is out for delivery is still 'assigned' to this delivery.
+        """
+        return self.status in {
+            self.AssignmentStatus.ASSIGNED,
+            self.AssignmentStatus.ACCEPTED,
+            self.AssignmentStatus.EN_ROUTE_PICKUP,
+            self.AssignmentStatus.ARRIVED_PICKUP,
+            self.AssignmentStatus.PICKED_UP,
+            self.AssignmentStatus.OUT_FOR_DELIVERY,
+            self.AssignmentStatus.ARRIVED_DESTINATION,
+        }
 
     # ------------------------------------------------------------
 
     @property
     def is_accepted(self):
+        """
+        True for any state reached only after rider acceptance.
 
+        Excludes ASSIGNED (pre-acceptance) and COMPLETED (terminal).
+        """
         return self.status in {
             self.AssignmentStatus.ACCEPTED,
             self.AssignmentStatus.EN_ROUTE_PICKUP,
@@ -624,66 +454,51 @@ class DeliveryAssignment(TimeStampedModel):
             self.AssignmentStatus.PICKED_UP,
             self.AssignmentStatus.OUT_FOR_DELIVERY,
             self.AssignmentStatus.ARRIVED_DESTINATION,
-            self.AssignmentStatus.COMPLETED,
         }
 
     # ------------------------------------------------------------
 
     @property
     def is_picked_up(self):
+        """
+        True once the parcel is in the rider's possession.
 
+        Excludes COMPLETED (terminal).
+        """
         return self.status in {
             self.AssignmentStatus.PICKED_UP,
             self.AssignmentStatus.OUT_FOR_DELIVERY,
             self.AssignmentStatus.ARRIVED_DESTINATION,
-            self.AssignmentStatus.COMPLETED,
         }
 
     # ------------------------------------------------------------
 
     @property
     def is_completed(self):
-
-        return (
-            self.status
-            == self.AssignmentStatus.COMPLETED
-        )
+        return self.status == self.AssignmentStatus.COMPLETED
 
     # ------------------------------------------------------------
 
     @property
     def is_rejected(self):
-
-        return (
-            self.status
-            == self.AssignmentStatus.REJECTED
-        )
+        return self.status == self.AssignmentStatus.REJECTED
 
     # ------------------------------------------------------------
 
     @property
     def is_cancelled(self):
-
-        return (
-            self.status
-            == self.AssignmentStatus.CANCELLED
-        )
+        return self.status == self.AssignmentStatus.CANCELLED
 
     # ------------------------------------------------------------
 
     @property
     def is_failed(self):
-
-        return (
-            self.status
-            == self.AssignmentStatus.FAILED
-        )
+        return self.status == self.AssignmentStatus.FAILED
 
     # ------------------------------------------------------------
 
     @property
     def is_terminal(self):
-
         return self.status in {
             self.AssignmentStatus.COMPLETED,
             self.AssignmentStatus.REJECTED,
@@ -702,9 +517,7 @@ class DeliveryAssignment(TimeStampedModel):
 
             delivery.status == WAITING_FOR_RIDER
         """
-
         return (
-            self.status
-            == self.AssignmentStatus.CANCELLED
+            self.status == self.AssignmentStatus.CANCELLED
             and not self.is_active
         )

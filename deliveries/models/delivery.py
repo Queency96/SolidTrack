@@ -14,31 +14,13 @@ class Delivery(TimeStampedModel):
     Represents the transportation of one OrderFulfillment
     from a VendorStore to the customer's destination.
 
-    Architecture:
+    See module docstring in original for full responsibility list.
 
-        Order
-          ↓
-        OrderFulfillment
-          ├── OrderItem[]
-          ├── Package[]
-          └── Delivery
-                  ├── DeliveryAddress[]
-                  ├── DeliveryAssignment
-                  └── Dispatch / Offers
-
-    Delivery is strictly a logistics entity.
-
-    Commercial responsibility belongs to Order and
-    OrderFulfillment.
-
-    Delivery is responsible for:
-
-        - route
-        - transportation requirements
-        - delivery status
-        - delivery pricing
-        - scheduling
-        - tracking
+    Package sizing
+    --------------
+    package_size is required for pricing and is one of
+    SMALL / MEDIUM / LARGE. It is set by the booking flow
+    and is the authoritative input to PackagePricingStrategy.
     """
 
     # ==================================================
@@ -47,15 +29,8 @@ class Delivery(TimeStampedModel):
 
     class DeliveryType(models.TextChoices):
 
-        INSTANT = (
-            "INSTANT",
-            "Instant",
-        )
-
-        SCHEDULED = (
-            "SCHEDULED",
-            "Scheduled",
-        )
+        INSTANT = ("INSTANT", "Instant")
+        SCHEDULED = ("SCHEDULED", "Scheduled")
 
     # ==================================================
     # Delivery Status
@@ -63,50 +38,15 @@ class Delivery(TimeStampedModel):
 
     class DeliveryStatus(models.TextChoices):
 
-        PENDING = (
-            "PENDING",
-            "Pending",
-        )
-
-        WAITING_FOR_RIDER = (
-            "WAITING_FOR_RIDER",
-            "Waiting for Rider",
-        )
-
-        RIDER_ASSIGNED = (
-            "RIDER_ASSIGNED",
-            "Rider Assigned",
-        )
-
-        RIDER_ACCEPTED = (
-            "RIDER_ACCEPTED",
-            "Rider Accepted",
-        )
-
-        PICKED_UP = (
-            "PICKED_UP",
-            "Picked Up",
-        )
-
-        IN_TRANSIT = (
-            "IN_TRANSIT",
-            "In Transit",
-        )
-
-        DELIVERED = (
-            "DELIVERED",
-            "Delivered",
-        )
-
-        CANCELLED = (
-            "CANCELLED",
-            "Cancelled",
-        )
-
-        FAILED = (
-            "FAILED",
-            "Failed",
-        )
+        PENDING = ("PENDING", "Pending")
+        WAITING_FOR_RIDER = ("WAITING_FOR_RIDER", "Waiting for Rider")
+        RIDER_ASSIGNED = ("RIDER_ASSIGNED", "Rider Assigned")
+        RIDER_ACCEPTED = ("RIDER_ACCEPTED", "Rider Accepted")
+        PICKED_UP = ("PICKED_UP", "Picked Up")
+        IN_TRANSIT = ("IN_TRANSIT", "In Transit")
+        DELIVERED = ("DELIVERED", "Delivered")
+        CANCELLED = ("CANCELLED", "Cancelled")
+        FAILED = ("FAILED", "Failed")
 
     # ==================================================
     # Payment Status
@@ -114,20 +54,19 @@ class Delivery(TimeStampedModel):
 
     class PaymentStatus(models.TextChoices):
 
-        PENDING = (
-            "PENDING",
-            "Pending",
-        )
+        PENDING = ("PENDING", "Pending")
+        PAID = ("PAID", "Paid")
+        REFUNDED = ("REFUNDED", "Refunded")
 
-        PAID = (
-            "PAID",
-            "Paid",
-        )
+    # ==================================================
+    # Package Size
+    # ==================================================
 
-        REFUNDED = (
-            "REFUNDED",
-            "Refunded",
-        )
+    class PackageSize(models.TextChoices):
+
+        SMALL = ("SMALL", "Small")
+        MEDIUM = ("MEDIUM", "Medium")
+        LARGE = ("LARGE", "Large")
 
     # ==================================================
     # ID
@@ -186,10 +125,6 @@ class Delivery(TimeStampedModel):
         blank=True,
     )
 
-    # ==================================================
-    # Pickup Store Snapshot
-    # ==================================================
-
     pickup_store_name = models.CharField(
         max_length=255,
         null=True,
@@ -216,10 +151,6 @@ class Delivery(TimeStampedModel):
         db_index=True,
     )
 
-    # ==================================================
-    # Payment
-    # ==================================================
-
     payment_status = models.CharField(
         max_length=20,
         choices=PaymentStatus.choices,
@@ -241,6 +172,16 @@ class Delivery(TimeStampedModel):
     # ==================================================
     # Package Summary
     # ==================================================
+
+    package_size = models.CharField(
+        max_length=10,
+        choices=PackageSize.choices,
+        default=PackageSize.SMALL,
+        help_text=(
+            "Package size bucket used for pricing. "
+            "One of SMALL / MEDIUM / LARGE."
+        ),
+    )
 
     total_package_weight = models.DecimalField(
         max_digits=10,
@@ -284,65 +225,35 @@ class Delivery(TimeStampedModel):
     # ==================================================
 
     estimated_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     actual_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     base_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     distance_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     weight_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     surge_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     discount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     insurance_fee = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     service_fee = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     total_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
     )
-
     currency = models.CharField(
         max_length=3,
         default="NGN",
@@ -361,45 +272,14 @@ class Delivery(TimeStampedModel):
     # Lifecycle Timestamps
     # ==================================================
 
-    waiting_for_rider_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    rider_assigned_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    rider_accepted_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    picked_up_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    in_transit_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    delivered_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    cancelled_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    failed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
+    waiting_for_rider_at = models.DateTimeField(null=True, blank=True)
+    rider_assigned_at = models.DateTimeField(null=True, blank=True)
+    rider_accepted_at = models.DateTimeField(null=True, blank=True)
+    picked_up_at = models.DateTimeField(null=True, blank=True)
+    in_transit_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
 
     # ==================================================
     # Meta
@@ -407,68 +287,18 @@ class Delivery(TimeStampedModel):
 
     class Meta:
 
-        ordering = [
-            "-created_at",
-        ]
+        ordering = ["-created_at"]
 
         indexes = [
-
-            models.Index(
-                fields=[
-                    "status",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "payment_status",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "customer",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "vendor",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "pickup_store",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "scheduled_at",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "status",
-                    "scheduled_at",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "vendor",
-                    "status",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "pickup_store",
-                    "status",
-                ],
-            ),
+            models.Index(fields=["status"]),
+            models.Index(fields=["payment_status"]),
+            models.Index(fields=["customer"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["pickup_store"]),
+            models.Index(fields=["scheduled_at"]),
+            models.Index(fields=["status", "scheduled_at"]),
+            models.Index(fields=["vendor", "status"]),
+            models.Index(fields=["pickup_store", "status"]),
         ]
 
     # ==================================================
@@ -485,186 +315,91 @@ class Delivery(TimeStampedModel):
     def clean(self):
 
         # ----------------------------------------------
-        # Fulfillment
+        # Fulfillment / customer / store / vendor
         # ----------------------------------------------
 
         if self.fulfillment_id is None:
             raise ValidationError(
-                {
-                    "fulfillment": (
-                        "A delivery must belong "
-                        "to an order fulfillment."
-                    )
-                }
+                {"fulfillment": "A delivery must belong to an order fulfillment."}
             )
 
-        # ----------------------------------------------
-        # Customer
-        # ----------------------------------------------
-
-        if (
-            self.customer_id
-            != self.fulfillment.order.customer_id
-        ):
+        if self.customer_id != self.fulfillment.order.customer_id:
             raise ValidationError(
-                {
-                    "customer": (
-                        "Delivery customer must "
-                        "match the fulfillment "
-                        "order customer."
-                    )
-                }
+                {"customer": "Delivery customer must match the fulfillment order customer."}
             )
 
-        # ----------------------------------------------
-        # Pickup Store
-        # ----------------------------------------------
-
-        if (
-            self.pickup_store_id
-            != self.fulfillment.store_id
-        ):
+        if self.pickup_store_id != self.fulfillment.store_id:
             raise ValidationError(
-                {
-                    "pickup_store": (
-                        "Pickup store must match "
-                        "the fulfillment store."
-                    )
-                }
+                {"pickup_store": "Pickup store must match the fulfillment store."}
             )
 
-        # ----------------------------------------------
-        # Vendor
-        # ----------------------------------------------
-
-        if (
-            self.vendor_id
-            != self.fulfillment.store.vendor_id
-        ):
+        if self.vendor_id != self.fulfillment.store.vendor_id:
             raise ValidationError(
-                {
-                    "vendor": (
-                        "Delivery vendor must "
-                        "match the fulfillment "
-                        "store vendor."
-                    )
-                }
+                {"vendor": "Delivery vendor must match the fulfillment store vendor."}
             )
 
         # ----------------------------------------------
-        # Delivery Type
+        # Delivery type / schedule
         # ----------------------------------------------
 
         if (
-            self.delivery_type
-            == self.DeliveryType.SCHEDULED
+            self.delivery_type == self.DeliveryType.SCHEDULED
             and self.scheduled_at is None
         ):
             raise ValidationError(
-                {
-                    "scheduled_at": (
-                        "Scheduled delivery "
-                        "requires a scheduled "
-                        "date and time."
-                    )
-                }
+                {"scheduled_at": "Scheduled delivery requires a scheduled date and time."}
             )
 
         if (
-            self.delivery_type
-            == self.DeliveryType.INSTANT
+            self.delivery_type == self.DeliveryType.INSTANT
             and self.scheduled_at is not None
         ):
             raise ValidationError(
-                {
-                    "scheduled_at": (
-                        "Instant delivery must "
-                        "not have a scheduled time."
-                    )
-                }
+                {"scheduled_at": "Instant delivery must not have a scheduled time."}
             )
 
         # ----------------------------------------------
-        # Distance
+        # Package size
         # ----------------------------------------------
 
-        if (
-            self.distance_km is not None
-            and self.distance_km < Decimal("0.00")
-        ):
+        if self.package_size not in self.PackageSize.values:
             raise ValidationError(
-                {
-                    "distance_km": (
-                        "Distance cannot "
-                        "be negative."
-                    )
-                }
+                {"package_size": "Package size must be SMALL, MEDIUM, or LARGE."}
             )
 
         # ----------------------------------------------
-        # Package Weight
+        # Distance / weight / count
         # ----------------------------------------------
+
+        if self.distance_km is not None and self.distance_km < Decimal("0.00"):
+            raise ValidationError({"distance_km": "Distance cannot be negative."})
 
         if self.total_package_weight < Decimal("0.000"):
             raise ValidationError(
-                {
-                    "total_package_weight": (
-                        "Total package weight "
-                        "cannot be negative."
-                    )
-                }
+                {"total_package_weight": "Total package weight cannot be negative."}
             )
-
-        # ----------------------------------------------
-        # Package Count
-        # ----------------------------------------------
 
         if self.package_count < 0:
-            raise ValidationError(
-                {
-                    "package_count": (
-                        "Package count cannot "
-                        "be negative."
-                    )
-                }
-            )
+            raise ValidationError({"package_count": "Package count cannot be negative."})
 
         # ----------------------------------------------
-        # Pricing
+        # Monetary fields
         # ----------------------------------------------
 
         monetary_fields = [
-            "estimated_price",
-            "actual_price",
-            "base_price",
-            "distance_price",
-            "weight_price",
-            "surge_price",
-            "discount",
-            "insurance_fee",
-            "service_fee",
-            "total_price",
+            "estimated_price", "actual_price", "base_price",
+            "distance_price", "weight_price", "surge_price",
+            "discount", "insurance_fee", "service_fee", "total_price",
         ]
 
         for field_name in monetary_fields:
-
-            value = getattr(
-                self,
-                field_name,
-            )
-
-            if value < Decimal("0.00"):
+            if getattr(self, field_name) < Decimal("0.00"):
                 raise ValidationError(
-                    {
-                        field_name: (
-                            f"{field_name.replace('_', ' ').capitalize()} "
-                            "cannot be negative."
-                        )
-                    }
+                    {field_name: f"{field_name.replace('_', ' ').capitalize()} cannot be negative."}
                 )
 
         # ----------------------------------------------
-        # Total Price
+        # Total price
         # ----------------------------------------------
 
         calculated_total = (
@@ -682,63 +417,32 @@ class Delivery(TimeStampedModel):
 
         if self.total_price != calculated_total:
             raise ValidationError(
-                {
-                    "total_price": (
-                        "Delivery total price does "
-                        "not match the pricing "
-                        "breakdown."
-                    )
-                }
+                {"total_price": "Delivery total price does not match the pricing breakdown."}
             )
 
         # ----------------------------------------------
-        # Status Timestamps
+        # Status timestamps
         # ----------------------------------------------
 
         timestamp_requirements = {
-
-            self.DeliveryStatus.WAITING_FOR_RIDER:
-                "waiting_for_rider_at",
-
-            self.DeliveryStatus.RIDER_ASSIGNED:
-                "rider_assigned_at",
-
-            self.DeliveryStatus.RIDER_ACCEPTED:
-                "rider_accepted_at",
-
-            self.DeliveryStatus.PICKED_UP:
-                "picked_up_at",
-
-            self.DeliveryStatus.IN_TRANSIT:
-                "in_transit_at",
-
-            self.DeliveryStatus.DELIVERED:
-                "delivered_at",
-
-            self.DeliveryStatus.CANCELLED:
-                "cancelled_at",
-
-            self.DeliveryStatus.FAILED:
-                "failed_at",
+            self.DeliveryStatus.WAITING_FOR_RIDER: "waiting_for_rider_at",
+            self.DeliveryStatus.RIDER_ASSIGNED: "rider_assigned_at",
+            self.DeliveryStatus.RIDER_ACCEPTED: "rider_accepted_at",
+            self.DeliveryStatus.PICKED_UP: "picked_up_at",
+            self.DeliveryStatus.IN_TRANSIT: "in_transit_at",
+            self.DeliveryStatus.DELIVERED: "delivered_at",
+            self.DeliveryStatus.CANCELLED: "cancelled_at",
+            self.DeliveryStatus.FAILED: "failed_at",
         }
 
-        required_field = timestamp_requirements.get(
-            self.status
-        )
+        required_field = timestamp_requirements.get(self.status)
 
-        if (
-            required_field
-            and getattr(
-                self,
-                required_field,
-            ) is None
-        ):
+        if required_field and getattr(self, required_field) is None:
             raise ValidationError(
                 {
                     required_field: (
                         f"{required_field.replace('_', ' ').capitalize()} "
-                        f"is required when delivery status "
-                        f"is {self.status}."
+                        f"is required when delivery status is {self.status}."
                     )
                 }
             )
@@ -747,24 +451,11 @@ class Delivery(TimeStampedModel):
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
-
+    def save(self, *args, **kwargs):
         if not self.tracking_number:
-            self.tracking_number = (
-                f"DLV-"
-                f"{uuid.uuid4().hex[:12].upper()}"
-            )
-
+            self.tracking_number = f"DLV-{uuid.uuid4().hex[:12].upper()}"
         self.full_clean()
-
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Properties
@@ -772,17 +463,11 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_pending(self):
-        return (
-            self.status
-            == self.DeliveryStatus.PENDING
-        )
+        return self.status == self.DeliveryStatus.PENDING
 
     @property
     def is_waiting_for_rider(self):
-        return (
-            self.status
-            == self.DeliveryStatus.WAITING_FOR_RIDER
-        )
+        return self.status == self.DeliveryStatus.WAITING_FOR_RIDER
 
     @property
     def is_assigned(self):
@@ -811,53 +496,26 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_delivered(self):
-        return (
-            self.status
-            == self.DeliveryStatus.DELIVERED
-        )
+        return self.status == self.DeliveryStatus.DELIVERED
 
     @property
     def is_cancelled(self):
-        return (
-            self.status
-            == self.DeliveryStatus.CANCELLED
-        )
+        return self.status == self.DeliveryStatus.CANCELLED
 
     @property
     def is_failed(self):
-        return (
-            self.status
-            == self.DeliveryStatus.FAILED
-        )
+        return self.status == self.DeliveryStatus.FAILED
 
     @property
     def is_terminal(self):
-        """
-        Business terminal state.
-
-        FAILED is intentionally included here because the
-        delivery lifecycle itself has reached a failure state.
-
-        DispatchCoordinator should use its own dispatch-terminal
-        definition because FAILED deliveries remain retryable.
-        """
-
         return self.status in {
             self.DeliveryStatus.DELIVERED,
             self.DeliveryStatus.CANCELLED,
             self.DeliveryStatus.FAILED,
         }
 
-    # ==================================================
-    # Dispatch Helpers
-    # ==================================================
-
     @property
     def is_dispatch_terminal(self):
-        """
-        Whether the delivery can never be dispatched again.
-        """
-
         return self.status in {
             self.DeliveryStatus.DELIVERED,
             self.DeliveryStatus.CANCELLED,
@@ -865,10 +523,6 @@ class Delivery(TimeStampedModel):
 
     @property
     def is_dispatchable(self):
-        """
-        Whether dispatch may operate on the delivery.
-        """
-
         return self.status in {
             self.DeliveryStatus.PENDING,
             self.DeliveryStatus.WAITING_FOR_RIDER,
@@ -881,58 +535,31 @@ class Delivery(TimeStampedModel):
 
     @property
     def pickup_address(self):
-        return self.addresses.filter(
-            address_type="PICKUP",
-        ).first()
+        return self.addresses.filter(address_type="PICKUP").first()
 
     @property
     def destination_address(self):
-        return self.addresses.filter(
-            address_type="DELIVERY",
-        ).first()
-
-    # ==================================================
-    # Location Helpers
-    # ==================================================
+        return self.addresses.filter(address_type="DELIVERY").first()
 
     @property
     def pickup_location(self):
-
         address = self.pickup_address
-
         if not address:
             return None
-
-        return {
-            "latitude": address.latitude,
-            "longitude": address.longitude,
-        }
+        return {"latitude": address.latitude, "longitude": address.longitude}
 
     @property
     def destination_location(self):
-
         address = self.destination_address
-
         if not address:
             return None
-
-        return {
-            "latitude": address.latitude,
-            "longitude": address.longitude,
-        }
-
-    # ==================================================
-    # Route
-    # ==================================================
+        return {"latitude": address.latitude, "longitude": address.longitude}
 
     @property
     def route(self):
-
         return {
             "pickup": self.pickup_location,
             "destination": self.destination_location,
             "distance_km": self.distance_km,
-            "estimated_duration_minutes": (
-                self.estimated_duration_minutes
-            ),
+            "estimated_duration_minutes": self.estimated_duration_minutes,
         }

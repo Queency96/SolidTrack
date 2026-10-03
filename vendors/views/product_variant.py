@@ -1,35 +1,28 @@
 from django.db import transaction
-
 from rest_framework import generics
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import ValidationError
 
 from vendors.models import (
     Product,
-    ProductOptionValue,
     ProductVariant,
-    ProductVariantOptionValue,
 )
-
-from vendors.serializers.product import (
-    ProductVariantSerializer,
-)
+from vendors.serializers.product import ProductVariantSerializer
 
 
-class ProductVariantListCreateView(
-    generics.ListCreateAPIView
-):
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+class ProductVariantListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductVariantSerializer
 
     def get_product(self):
-        return Product.objects.filter(
-            pk=self.kwargs["product_id"],
-            vendor__user=self.request.user,
-        ).first()
+        return (
+            Product.objects
+            .filter(
+                pk=self.kwargs["product_id"],
+                vendor__user=self.request.user,
+            )
+            .first()
+        )
 
     def get_queryset(self):
         product = self.get_product()
@@ -52,55 +45,26 @@ class ProductVariantListCreateView(
         product = self.get_product()
 
         if product is None:
-            from rest_framework.exceptions import NotFound
+            raise NotFound("Product not found.")
 
-            raise NotFound(
-                "Product not found."
-            )
-
-        variant = serializer.save(
-            product=product
-        )
-
-        # --------------------------------------------------
-        # Ensure only one default variant.
-        # --------------------------------------------------
+        variant = serializer.save(product=product)
 
         if variant.is_default:
             ProductVariant.objects.filter(
                 product=product,
                 is_default=True,
-            ).exclude(
-                pk=variant.pk
-            ).update(
-                is_default=False
-            )
-
-        # --------------------------------------------------
-        # If this is the first variant, make it default.
-        # --------------------------------------------------
+            ).exclude(pk=variant.pk).update(is_default=False)
 
         if not ProductVariant.objects.filter(
             product=product,
             is_default=True,
         ).exists():
             variant.is_default = True
-
-            variant.save(
-                update_fields=[
-                    "is_default",
-                    "updated_at",
-                ]
-            )
+            variant.save(update_fields=["is_default", "updated_at"])
 
 
-class ProductVariantDetailView(
-    generics.RetrieveUpdateDestroyAPIView
-):
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+class ProductVariantDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductVariantSerializer
 
     def get_queryset(self):
@@ -132,24 +96,14 @@ class ProductVariantDetailView(
             ProductVariant.objects.filter(
                 product=variant.product,
                 is_default=True,
-            ).exclude(
-                pk=variant.pk
-            ).update(
-                is_default=False
-            )
+            ).exclude(pk=variant.pk).update(is_default=False)
 
         elif not ProductVariant.objects.filter(
             product=variant.product,
             is_default=True,
         ).exists():
             variant.is_default = True
-
-            variant.save(
-                update_fields=[
-                    "is_default",
-                    "updated_at",
-                ]
-            )
+            variant.save(update_fields=["is_default", "updated_at"])
 
     @transaction.atomic
     def perform_destroy(self, instance):
@@ -161,23 +115,11 @@ class ProductVariantDetailView(
         if was_default:
             replacement = (
                 ProductVariant.objects
-                .filter(
-                    product=product,
-                    is_active=True,
-                )
-                .order_by(
-                    "sort_order",
-                    "created_at",
-                )
+                .filter(product=product, is_active=True)
+                .order_by("sort_order", "created_at")
                 .first()
             )
 
             if replacement:
                 replacement.is_default = True
-
-                replacement.save(
-                    update_fields=[
-                        "is_default",
-                        "updated_at",
-                    ]
-                )
+                replacement.save(update_fields=["is_default", "updated_at"])

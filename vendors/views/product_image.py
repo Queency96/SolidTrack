@@ -15,6 +15,8 @@ class ProductImageListCreateView(
 
     GET:
         Return all images belonging to the specified product.
+        Returns 404 when the product is missing or not owned
+        by the authenticated vendor.
 
     POST:
         Create a new image for the specified product.
@@ -27,10 +29,7 @@ class ProductImageListCreateView(
     are delegated to ProductImageService.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductImageSerializer
 
     # ----------------------------------------------------------
@@ -46,11 +45,7 @@ class ProductImageListCreateView(
         if not hasattr(self, "_product"):
             self._product = (
                 Product.objects
-                .select_related(
-                    "vendor",
-                    "store",
-                    "category",
-                )
+                .select_related("vendor", "store", "category")
                 .filter(
                     pk=self.kwargs["product_id"],
                     vendor__user=self.request.user,
@@ -67,6 +62,10 @@ class ProductImageListCreateView(
     def get_queryset(self):
         """
         Return images belonging to the vendor-owned product.
+
+        Returns an empty queryset when the product is missing.
+        The list() override raises 404 for GET requests so the
+        endpoint is consistent with POST.
         """
 
         product = self.get_product()
@@ -76,15 +75,25 @@ class ProductImageListCreateView(
 
         return (
             ProductImage.objects
-            .filter(
-                product_id=product.pk,
-            )
+            .filter(product_id=product.pk)
             .select_related("product")
-            .order_by(
-                "display_order",
-                "created_at",
-            )
+            .order_by("display_order", "created_at")
         )
+
+    # ----------------------------------------------------------
+    # List (GET) — 404 consistency with POST
+    # ----------------------------------------------------------
+
+    def list(self, request, *args, **kwargs):
+        """
+        Return 404 when the parent product is missing or not
+        owned by the authenticated vendor.
+        """
+
+        if self.get_product() is None:
+            raise NotFound("Product not found.")
+
+        return super().list(request, *args, **kwargs)
 
     # ----------------------------------------------------------
     # Create
@@ -103,9 +112,7 @@ class ProductImageListCreateView(
 
         image = ProductImageService.create_image(
             product=product,
-            validated_data=dict(
-                serializer.validated_data
-            ),
+            validated_data=dict(serializer.validated_data),
         )
 
         serializer.instance = image
@@ -117,27 +124,12 @@ class ProductImageDetailView(
     """
     Retrieve, update, or delete an image belonging to a
     vendor-owned product.
-
-    Image lifecycle operations are delegated to
-    ProductImageService.
     """
 
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
+    permission_classes = [IsAuthenticated]
     serializer_class = ProductImageSerializer
 
-    # ----------------------------------------------------------
-    # Queryset
-    # ----------------------------------------------------------
-
     def get_queryset(self):
-        """
-        Restrict image access to images belonging to products
-        owned by the authenticated vendor.
-        """
-
         return (
             ProductImage.objects
             .filter(
@@ -149,41 +141,16 @@ class ProductImageDetailView(
                 "product__vendor",
                 "product__store",
             )
-            .order_by(
-                "display_order",
-                "created_at",
-            )
+            .order_by("display_order", "created_at")
         )
 
-    # ----------------------------------------------------------
-    # Update
-    # ----------------------------------------------------------
-
     def perform_update(self, serializer):
-        """
-        Delegate update and primary-image lifecycle handling
-        to ProductImageService.
-        """
-
         image = ProductImageService.update_image(
             image=self.get_object(),
-            validated_data=dict(
-                serializer.validated_data
-            ),
+            validated_data=dict(serializer.validated_data),
         )
 
         serializer.instance = image
 
-    # ----------------------------------------------------------
-    # Delete
-    # ----------------------------------------------------------
-
     def perform_destroy(self, instance):
-        """
-        Delegate deletion and primary-image replacement handling
-        to ProductImageService.
-        """
-
-        ProductImageService.delete_image(
-            image=instance,
-        )
+        ProductImageService.delete_image(image=instance)

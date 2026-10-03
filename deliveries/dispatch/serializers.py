@@ -3,9 +3,41 @@ from deliveries.constants import DeliveryOfferAction
 from deliveries.models import (
     DeliveryAssignment,
     DeliveryOffer,
+    Delivery,
     DispatchConfiguration,
 )
 from .result import DispatchResult
+
+
+# ==========================================================
+# Delivery
+# ==========================================================
+
+class DeliverySummarySerializer(
+    serializers.ModelSerializer,
+):
+    """
+    Minimal read-only representation of a Delivery for
+    embedding in dispatch responses.
+
+    Full booking/serialization logic for deliveries lives
+    in the deliveries app serializer module.
+    """
+
+    class Meta:
+        model = Delivery
+
+        fields = (
+            "id",
+            "tracking_number",
+            "status",
+            "delivery_type",
+            "scheduled_at",
+            "created_at",
+            "updated_at",
+        )
+
+        read_only_fields = fields
 
 
 # ==========================================================
@@ -30,28 +62,15 @@ class DeliveryOfferResponseSerializer(
         trim_whitespace=True,
     )
 
-    def validate(
-        self,
-        attrs,
-    ):
-        action = attrs.get(
-            "action",
-        )
+    def validate(self, attrs):
+        action = attrs.get("action")
 
         rejection_reason = (
-            attrs.get(
-                "rejection_reason",
-            )
-            or ""
+            attrs.get("rejection_reason") or ""
         ).strip()
 
-        # ----------------------------------------------
-        # Reject requires a reason
-        # ----------------------------------------------
-
         if (
-            action
-            == DeliveryOfferAction.REJECT
+            action == DeliveryOfferAction.REJECT
             and not rejection_reason
         ):
             raise serializers.ValidationError(
@@ -63,20 +82,10 @@ class DeliveryOfferResponseSerializer(
                 },
             )
 
-        # ----------------------------------------------
-        # Ignore reason for ACCEPT
-        # ----------------------------------------------
-
-        if (
-            action
-            == DeliveryOfferAction.ACCEPT
-        ):
+        if action == DeliveryOfferAction.ACCEPT:
             attrs["rejection_reason"] = ""
-
         else:
-            attrs["rejection_reason"] = (
-                rejection_reason
-            )
+            attrs["rejection_reason"] = rejection_reason
 
         return attrs
 
@@ -150,6 +159,8 @@ class DeliveryAssignmentSerializer(
 
     rider_name = serializers.SerializerMethodField()
 
+    # NOTE: If the User model exposes `phone` instead of
+    # `phone_number`, change the source below accordingly.
     rider_phone = serializers.CharField(
         source="rider.phone_number",
         read_only=True,
@@ -187,42 +198,16 @@ class DeliveryAssignmentSerializer(
 
         read_only_fields = fields
 
-    # ------------------------------------------------------
-    # Rider Name
-    # ------------------------------------------------------
-
-    def get_rider_name(
-        self,
-        obj,
-    ):
-        rider = getattr(
-            obj,
-            "rider",
-            None,
-        )
-
+    def get_rider_name(self, obj):
+        rider = getattr(obj, "rider", None)
         if rider is None:
             return None
-
         return rider.get_full_name()
 
-    # ------------------------------------------------------
-    # Assigned By Name
-    # ------------------------------------------------------
-
-    def get_assigned_by_name(
-        self,
-        obj,
-    ):
-        assigned_by = getattr(
-            obj,
-            "assigned_by",
-            None,
-        )
-
+    def get_assigned_by_name(self, obj):
+        assigned_by = getattr(obj, "assigned_by", None)
         if assigned_by is None:
             return None
-
         return assigned_by.get_full_name()
 
 
@@ -256,6 +241,11 @@ class DispatchResultSerializer(
 
     data = serializers.DictField()
 
+    delivery = DeliverySummarySerializer(
+        read_only=True,
+        allow_null=True,
+    )
+
     assignment = DeliveryAssignmentSerializer(
         read_only=True,
         allow_null=True,
@@ -266,14 +256,8 @@ class DispatchResultSerializer(
         allow_null=True,
     )
 
-    def to_representation(
-        self,
-        instance,
-    ):
-        if not isinstance(
-            instance,
-            DispatchResult,
-        ):
+    def to_representation(self, instance):
+        if not isinstance(instance, DispatchResult):
             raise TypeError(
                 "DispatchResultSerializer expects "
                 "a DispatchResult instance."
@@ -285,11 +269,20 @@ class DispatchResultSerializer(
 
         status_value = instance.status
 
-        if hasattr(
-            status_value,
-            "value",
-        ):
+        if hasattr(status_value, "value"):
             status_value = status_value.value
+
+        # ----------------------------------------------
+        # Delivery
+        # ----------------------------------------------
+
+        delivery_data = None
+
+        if instance.delivery is not None:
+            delivery_data = DeliverySummarySerializer(
+                instance.delivery,
+                context=self.context,
+            ).data
 
         # ----------------------------------------------
         # Assignment
@@ -298,12 +291,10 @@ class DispatchResultSerializer(
         assignment_data = None
 
         if instance.assignment is not None:
-            assignment_data = (
-                DeliveryAssignmentSerializer(
-                    instance.assignment,
-                    context=self.context,
-                ).data
-            )
+            assignment_data = DeliveryAssignmentSerializer(
+                instance.assignment,
+                context=self.context,
+            ).data
 
         # ----------------------------------------------
         # Offer
@@ -312,12 +303,10 @@ class DispatchResultSerializer(
         offer_data = None
 
         if instance.offer is not None:
-            offer_data = (
-                DeliveryOfferSerializer(
-                    instance.offer,
-                    context=self.context,
-                ).data
-            )
+            offer_data = DeliveryOfferSerializer(
+                instance.offer,
+                context=self.context,
+            ).data
 
         # ----------------------------------------------
         # Base response
@@ -325,27 +314,13 @@ class DispatchResultSerializer(
 
         return {
             "success": instance.success,
-
-            "status": str(
-                status_value,
-            ),
-
+            "status": str(status_value),
             "message": instance.message,
-
-            "errors": list(
-                instance.errors,
-            ),
-
-            "warnings": list(
-                instance.warnings,
-            ),
-
-            "data": dict(
-                instance.data,
-            ),
-
+            "errors": list(instance.errors),
+            "warnings": list(instance.warnings),
+            "data": dict(instance.data),
+            "delivery": delivery_data,
             "assignment": assignment_data,
-
             "offer": offer_data,
         }
 
@@ -360,8 +335,13 @@ class DispatchConfigurationSerializer(
     """
     Serializer for dispatch configuration.
 
-    This serializer is primarily intended for
-    administrative configuration.
+    `is_active` is intentionally read-only.
+
+    Activating a configuration must go through a dedicated
+    endpoint that also invalidates the configuration cache
+    used by DispatchConfigurationService. Flipping `is_active`
+    through this serializer would otherwise leave the cached
+    active configuration stale for up to 30 minutes.
     """
 
     class Meta:
@@ -372,6 +352,7 @@ class DispatchConfigurationSerializer(
         read_only_fields = (
             "created_at",
             "updated_at",
+            "is_active",
         )
 
 
@@ -404,10 +385,7 @@ class AssignmentActionSerializer(
         trim_whitespace=True,
     )
 
-    def validate(
-        self,
-        attrs,
-    ):
+    def validate(self, attrs):
         if (
             attrs["action"] == "CANCEL"
             and not attrs.get("reason")
