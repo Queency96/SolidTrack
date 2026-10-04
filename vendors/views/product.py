@@ -200,7 +200,7 @@ class PublicProductQuerySetMixin:
         return (
             ProductOption.objects
             .filter(
-                active=True,
+                is_active=True,
             )
             .prefetch_related(
                 Prefetch(

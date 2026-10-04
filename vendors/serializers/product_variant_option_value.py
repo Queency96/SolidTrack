@@ -12,8 +12,30 @@ from ..models.product_variant_option_value import (
 
 
 # ============================================================
-# Product Variant Option Value Serializer
+# Nested Option Reference
 # ============================================================
+
+
+class ProductVariantOptionValueNestedOptionSerializer(
+    serializers.Serializer,
+):
+    """
+    Compact representation of the parent ProductOption.
+
+    Embedded inside ProductVariantOptionValueNestedSerializer
+    so the variant output stays flat while still carrying the
+    option identity.
+    """
+
+    id = serializers.UUIDField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    slug = serializers.CharField(read_only=True)
+
+
+# ============================================================
+# Product Variant Option Value — Full (CRUD)
+# ============================================================
+
 
 class ProductVariantOptionValueSerializer(
     serializers.ModelSerializer,
@@ -92,36 +114,12 @@ class ProductVariantOptionValueSerializer(
         model = ProductVariantOptionValue
 
         fields = [
-            # ------------------------------------------------
-            # Identity
-            # ------------------------------------------------
-
             "id",
-
-            # ------------------------------------------------
-            # Input
-            # ------------------------------------------------
-
             "option_value_id",
-
-            # ------------------------------------------------
-            # Option
-            # ------------------------------------------------
-
             "option_id",
             "option",
-
-            # ------------------------------------------------
-            # Value
-            # ------------------------------------------------
-
             "value",
             "display_name",
-
-            # ------------------------------------------------
-            # Timestamp
-            # ------------------------------------------------
-
             "created_at",
         ]
 
@@ -142,15 +140,8 @@ class ProductVariantOptionValueSerializer(
     def get_option_id(self, obj):
         """
         Return the ProductOption UUID.
-
-        ProductVariantOptionValue exposes option_id as a
-        model property, so drf-spectacular cannot reliably
-        infer its type from ReadOnlyField().
         """
-
         return obj.option_id
-
-    # --------------------------------------------------------
 
     @extend_schema_field(serializers.CharField())
     def get_display_name(self, obj):
@@ -158,10 +149,8 @@ class ProductVariantOptionValueSerializer(
         Return the human-readable option/value combination.
 
         Example:
-
             Color: Black
         """
-
         return obj.display_name
 
     # ========================================================
@@ -172,14 +161,9 @@ class ProductVariantOptionValueSerializer(
         """
         Validate the selected option value against the
         supplied variant.
-
-        The variant is intentionally obtained from serializer
-        context rather than accepting a writable `variant`
-        field from the request.
         """
 
         variant = self.context.get("variant")
-
         option_value = attrs.get("option_value")
 
         # ----------------------------------------------------
@@ -188,23 +172,12 @@ class ProductVariantOptionValueSerializer(
 
         if variant is None:
             raise serializers.ValidationError(
-                {
-                    "variant": (
-                        "Variant context is required."
-                    )
-                }
+                {"variant": "Variant context is required."}
             )
 
-        if not isinstance(
-            variant,
-            ProductVariant,
-        ):
+        if not isinstance(variant, ProductVariant):
             raise serializers.ValidationError(
-                {
-                    "variant": (
-                        "Invalid variant context."
-                    )
-                }
+                {"variant": "Invalid variant context."}
             )
 
         # ----------------------------------------------------
@@ -213,11 +186,7 @@ class ProductVariantOptionValueSerializer(
 
         if option_value is None:
             raise serializers.ValidationError(
-                {
-                    "option_value_id": (
-                        "Option value is required."
-                    )
-                }
+                {"option_value_id": "Option value is required."}
             )
 
         # ----------------------------------------------------
@@ -257,11 +226,7 @@ class ProductVariantOptionValueSerializer(
 
         if not option.is_active:
             raise serializers.ValidationError(
-                {
-                    "option_value_id": (
-                        "The selected option is inactive."
-                    )
-                }
+                {"option_value_id": "The selected option is inactive."}
             )
 
         # ----------------------------------------------------
@@ -272,8 +237,7 @@ class ProductVariantOptionValueSerializer(
             raise serializers.ValidationError(
                 {
                     "option_value_id": (
-                        "The selected option value "
-                        "is inactive."
+                        "The selected option value is inactive."
                     )
                 }
             )
@@ -290,14 +254,8 @@ class ProductVariantOptionValueSerializer(
             )
         )
 
-        # ----------------------------------------------------
-        # Exclude current record during update
-        # ----------------------------------------------------
-
         if self.instance is not None:
-            existing = existing.exclude(
-                pk=self.instance.pk,
-            )
+            existing = existing.exclude(pk=self.instance.pk)
 
         if existing.exists():
             raise serializers.ValidationError(
@@ -310,3 +268,70 @@ class ProductVariantOptionValueSerializer(
             )
 
         return attrs
+
+
+# ============================================================
+# Product Variant Option Value — Nested (read-only)
+# ============================================================
+
+
+class ProductVariantOptionValueNestedSerializer(
+    serializers.ModelSerializer,
+):
+    """
+    Lightweight read-only representation used inside
+    ProductVariant responses.
+
+    Output shape (matches the previous inline contract
+    from ProductVariantSerializer.get_option_values):
+
+        {
+            "id": "<option_value_uuid>",
+            "option": {
+                "id": "<option_uuid>",
+                "name": "Color",
+                "slug": "color",
+            },
+            "name": "Black",
+            "slug": "black",
+        }
+
+    The `id` field is the underlying ProductOptionValue id,
+    not the ProductVariantOptionValue through-model id.
+
+    Prefetch contract: consumers should provide the link
+    queryset with `option_value` and `option_value__option`
+    already select_related to avoid N+1.
+    """
+
+    id = serializers.UUIDField(
+        source="option_value.id",
+        read_only=True,
+    )
+
+    option = ProductVariantOptionValueNestedOptionSerializer(
+        source="option_value.option",
+        read_only=True,
+    )
+
+    name = serializers.CharField(
+        source="option_value.name",
+        read_only=True,
+    )
+
+    slug = serializers.CharField(
+        source="option_value.slug",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ProductVariantOptionValue
+
+        fields = (
+            "id",
+            "option",
+            "name",
+            "slug",
+        )
+
+        read_only_fields = fields

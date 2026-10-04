@@ -117,7 +117,6 @@ class ProductVariant(models.Model):
     # ==================================================
 
     created_at = models.DateTimeField(auto_now_add=True)
-
     updated_at = models.DateTimeField(auto_now=True)
 
     # ==================================================
@@ -287,7 +286,7 @@ class ProductVariant(models.Model):
         Consumes the prefetched option-value links when
         available to avoid N+1 queries.
 
-        NOTE: ProductOption uses `active`, not `is_active`.
+        NOTE: ProductOption uses `is_active`.
         """
 
         if not self.is_active:
@@ -310,7 +309,7 @@ class ProductVariant(models.Model):
             if not value.is_active:
                 return False
 
-            if not option.active:
+            if not option.is_active:
                 return False
 
         return True
@@ -348,13 +347,13 @@ class ProductVariant(models.Model):
         Selected option values that are themselves active and
         whose parent option is active.
 
-        NOTE: ProductOption uses `active`, not `is_active`.
+        NOTE: ProductOption uses `is_active`.
         """
 
         return [
             value
             for value in self.selected_option_values
-            if value.is_active and value.option.active
+            if value.is_active and value.option.is_active
         ]
 
     # ==================================================
@@ -400,12 +399,12 @@ class ProductVariant(models.Model):
         Determine whether this variant covers every active
         option on its parent product.
 
-        NOTE: ProductOption uses `active`, not `is_active`.
+        NOTE: ProductOption uses `is_active`.
         """
 
         active_options = (
             self.product.options
-            .filter(active=True)
+            .filter(is_active=True)
             .count()
         )
 

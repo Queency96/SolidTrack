@@ -1,5 +1,7 @@
 from decimal import Decimal
+
 from django.core.cache import cache
+
 from ..models import PricingConfiguration
 from ..distance_service import DistanceService
 from ..pricing.calculator import PricingCalculator
@@ -18,7 +20,6 @@ class PricingService:
     """
 
     CACHE_KEY = "pricing_config"
-
     CACHE_TIMEOUT = 60 * 30
 
     # ==================================================
@@ -33,24 +34,18 @@ class PricingService:
         Configuration is cached for 30 minutes.
         """
 
-        config = cache.get(
-            cls.CACHE_KEY
-        )
+        config = cache.get(cls.CACHE_KEY)
 
         if config is not None:
-
             return config
 
         config = (
             PricingConfiguration.objects
-            .filter(
-                is_active=True,
-            )
+            .filter(is_active=True)
             .first()
         )
 
         if config is None:
-
             raise ValueError(
                 "No active pricing configuration found."
             )
@@ -69,10 +64,7 @@ class PricingService:
 
     @classmethod
     def clear_configuration_cache(cls):
-
-        cache.delete(
-            cls.CACHE_KEY
-        )
+        cache.delete(cls.CACHE_KEY)
 
     # ==================================================
     # Route
@@ -98,34 +90,21 @@ class PricingService:
         ]
 
         if missing:
-
             raise ValueError(
                 "Missing route coordinates: "
                 + ", ".join(missing)
             )
 
         route = DistanceService.get_distance(
-            pickup_lat=data[
-                "pickup_latitude"
-            ],
-            pickup_lng=data[
-                "pickup_longitude"
-            ],
-            destination_lat=data[
-                "destination_latitude"
-            ],
-            destination_lng=data[
-                "destination_longitude"
-            ],
+            pickup_lat=data["pickup_latitude"],
+            pickup_lng=data["pickup_longitude"],
+            destination_lat=data["destination_latitude"],
+            destination_lng=data["destination_longitude"],
         )
 
         return {
-            "distance": Decimal(
-                str(route["distance_km"])
-            ),
-            "duration": Decimal(
-                str(route["duration_minutes"])
-            ),
+            "distance": Decimal(str(route["distance_km"])),
+            "duration": Decimal(str(route["duration_minutes"])),
         }
 
     # ==================================================
@@ -157,52 +136,27 @@ class PricingService:
         """
 
         config = cls.get_configuration()
-
-        route = cls._get_route(
-            data
-        )
-
+        route = cls._get_route(data)
         calculator = PricingCalculator()
 
         result = calculator.calculate(
             config=config,
-
-            distance=route[
-                "distance"
-            ],
-
-            package_size=data[
-                "package_size"
-            ],
-
-            vehicle_type=data[
-                "vehicle_type"
-            ],
-
-            insurance=data.get(
-                "insurance",
-                False,
-            ),
-
+            distance=route["distance"],
+            package_size=data["package_size"],
+            vehicle_type=data["vehicle_type"],
+            insurance=data.get("insurance", False),
             declared_value=data.get(
                 "declared_value",
                 Decimal("0.00"),
             ),
-
             customer=customer,
-
             coupon=coupon,
         )
 
         result.update(
             {
-                "distance_km": route[
-                    "distance"
-                ],
-
-                "estimated_duration_minutes": (
-                    route["duration"]
-                ),
+                "distance_km": route["distance"],
+                "estimated_duration_minutes": route["duration"],
             }
         )
 
@@ -222,61 +176,51 @@ class PricingService:
         """
         Calculate pricing using an existing Delivery.
 
-        The delivery must already have pickup and
-        destination addresses.
+        The delivery must already have pickup and destination
+        addresses, a vehicle_type, and a package_size.
         """
 
         pickup = delivery.pickup_location
-
-        destination = (
-            delivery.destination_location
-        )
+        destination = delivery.destination_location
 
         if not pickup:
-
             raise ValueError(
                 "Delivery does not have a pickup location."
             )
 
         if not destination:
-
             raise ValueError(
                 "Delivery does not have a destination."
             )
 
-        package_size = (
-            delivery.total_package_weight
-        )
+        # --------------------------------------------------
+        # package_size comes from the delivery itself.
+        #
+        # Delivery.package_size is a SMALL/MEDIUM/LARGE enum
+        # value, which is what PackagePricingStrategy expects.
+        #
+        # Previously this passed delivery.total_package_weight
+        # (a Decimal), which raised KeyError inside the
+        # package pricing strategy.
+        # --------------------------------------------------
+        package_size = delivery.package_size
+
+        if not package_size:
+            raise ValueError(
+                "Delivery does not have a package_size."
+            )
 
         data = {
-            "pickup_latitude": pickup[
-                "latitude"
-            ],
-
-            "pickup_longitude": pickup[
-                "longitude"
-            ],
-
-            "destination_latitude": destination[
-                "latitude"
-            ],
-
-            "destination_longitude": destination[
-                "longitude"
-            ],
-
+            "pickup_latitude": pickup["latitude"],
+            "pickup_longitude": pickup["longitude"],
+            "destination_latitude": destination["latitude"],
+            "destination_longitude": destination["longitude"],
             "package_size": package_size,
-
             "vehicle_type": delivery.vehicle_type,
-
             "insurance": (
-                delivery.insurance_fee
-                > Decimal("0.00")
+                delivery.insurance_fee > Decimal("0.00")
             ),
-
-            "declared_value": Decimal(
-                "0.00"
-            ),
+            "declared_value": Decimal("0.00"),
         }
 
         return cls.estimate(

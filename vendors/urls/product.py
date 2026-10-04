@@ -19,16 +19,10 @@ from vendors.views.product_variant import (
     ProductVariantListCreateView,
 )
 
-# NOTE: module name is singular ("product_variant_image").
-# The previous import referenced "product_variant_images"
-# (plural), which does not exist.
+# Module is product_variant_images.py (plural).
 from vendors.views.product_variant_images import (
     ProductVariantImageDetailView,
     ProductVariantImageListCreateView,
-)
-
-from vendors.views.product_variant_option_value import (
-    ProductVariantOptionValueListCreateView,
 )
 
 from vendors.views.product_category import (

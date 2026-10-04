@@ -19,12 +19,20 @@ from ..serializers.product_category import (
 
 def get_category_queryset():
     """
-    Base ProductCategory queryset used by admin/category APIs.
+    Admin queryset.
 
-    The database calculates:
-        - product_count (all products)
-        - active_product_count (active + published only)
-        - has_children
+    Annotation names intentionally differ from model
+    properties so the serializer reads annotated values
+    (from the database) rather than triggering N+1 queries.
+
+        _annotated_product_count
+            All products assigned directly to the category.
+
+        _annotated_active_product_count
+            Only active + published products.
+
+        _annotated_has_children
+            Whether the category has subcategories.
     """
 
     children_queryset = ProductCategory.objects.filter(
@@ -47,9 +55,7 @@ def get_category_queryset():
                 ),
                 distinct=True,
             ),
-            _annotated_has_children=Exists(
-                children_queryset,
-            ),
+            _annotated_has_children=Exists(children_queryset),
         )
         .order_by("sort_order", "name")
     )
@@ -57,12 +63,20 @@ def get_category_queryset():
 
 def get_public_category_queryset():
     """
-    Optimized queryset for public category endpoints.
+    Public queryset.
+
+    Both counts are provided so the public serializer can
+    expose them without triggering N+1 queries. They are
+    differentiated:
+
+        _annotated_product_count
+            All products assigned directly to the category
+            (including inactive / unpublished).
+
+        _annotated_active_product_count
+            Only active + published products.
 
     Only active categories are exposed.
-
-    Product counts represent products that are both active
-    and published.
     """
 
     children_queryset = ProductCategory.objects.filter(
@@ -76,6 +90,10 @@ def get_public_category_queryset():
         .select_related("parent")
         .annotate(
             _annotated_product_count=Count(
+                "products",
+                distinct=True,
+            ),
+            _annotated_active_product_count=Count(
                 "products",
                 filter=Q(
                     products__is_active=True,
@@ -95,20 +113,16 @@ def get_public_category_queryset():
 
 def attach_root_category_ids(categories):
     """
-    Attach root category IDs to an already-materialized category
-    collection.
+    Attach root category IDs to an already-materialized
+    category collection.
 
-    The function performs no database queries.
-
-    It follows the parent relationships that were loaded by
-    select_related("parent") and resolves the root in memory.
-
-    A defensive cycle check prevents infinite loops if malformed
-    category data exists.
+    Performs no database queries. Follows the parent chain
+    loaded by select_related("parent"). A defensive cycle
+    check prevents infinite loops if malformed category data
+    exists.
     """
 
     categories = list(categories)
-
     if not categories:
         return categories
 
@@ -120,14 +134,11 @@ def attach_root_category_ids(categories):
 
         while current.parent_id:
             current_id = current.pk
-
             if current_id in visited:
                 break
-
             visited.add(current_id)
 
             parent = getattr(current, "parent", None)
-
             if parent is None:
                 break
 
@@ -172,16 +183,10 @@ class PublicProductCategoryListView(generics.ListAPIView):
         return get_public_category_queryset()
 
     def list(self, request, *args, **kwargs):
-        """
-        Materialize once so root category IDs can be attached
-        without serializer N+1 queries.
-        """
-
         queryset = self.filter_queryset(self.get_queryset())
         categories = list(queryset)
         attach_root_category_ids(categories)
         serializer = self.get_serializer(categories, many=True)
-
         return Response(serializer.data)
 
 
@@ -205,7 +210,6 @@ class PublicProductCategoryDetailView(generics.RetrieveAPIView):
         instance = self.get_object()
         attach_root_category_ids([instance])
         serializer = self.get_serializer(instance)
-
         return Response(serializer.data)
 
 
@@ -266,9 +270,7 @@ class CategoryOptionsView(APIView):
 # Admin Category List / Create
 # ==========================================================
 
-class AdminProductCategoryListCreateView(
-    generics.ListCreateAPIView
-):
+class AdminProductCategoryListCreateView(generics.ListCreateAPIView):
     """
     Admin category list and creation endpoint.
     """
@@ -295,9 +297,7 @@ class AdminProductCategoryListCreateView(
 # Admin Category Detail
 # ==========================================================
 
-class AdminProductCategoryDetailView(
-    generics.RetrieveUpdateDestroyAPIView
-):
+class AdminProductCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     Admin category retrieve/update/delete endpoint.
     """
