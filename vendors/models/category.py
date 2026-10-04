@@ -10,24 +10,6 @@ class ProductCategory(models.Model):
 
     Categories can be hierarchical.
 
-    Example:
-
-        Electronics
-        ├── Phones
-        │   ├── Smartphones
-        │   └── Feature Phones
-        │
-        ├── Computers
-        │   ├── Laptops
-        │   └── Desktops
-        │
-        └── Accessories
-
-        Fashion
-        ├── Men's Clothing
-        ├── Women's Clothing
-        └── Shoes
-
     Categories belong to the platform rather than to an
     individual vendor.
     """
@@ -42,9 +24,7 @@ class ProductCategory(models.Model):
     # Identity
     # ==================================================
 
-    name = models.CharField(
-        max_length=150,
-    )
+    name = models.CharField(max_length=150)
 
     slug = models.SlugField(
         max_length=180,
@@ -67,10 +47,7 @@ class ProductCategory(models.Model):
     # Description
     # ==================================================
 
-    description = models.TextField(
-        blank=True,
-        default="",
-    )
+    description = models.TextField(blank=True, default="")
 
     meta_title = models.CharField(
         max_length=180,
@@ -88,70 +65,58 @@ class ProductCategory(models.Model):
     # Display
     # ==================================================
 
-    image = CloudinaryField(
-        "image",
-        blank=True,
-        null=True,
-    )
+    image = CloudinaryField("image", blank=True, null=True)
 
-    sort_order = models.PositiveIntegerField(
-        default=0,
-    )
+    sort_order = models.PositiveIntegerField(default=0)
 
     # ==================================================
     # Status
     # ==================================================
 
-    is_active = models.BooleanField(
-        default=True,
-    )
+    is_active = models.BooleanField(default=True)
 
     # ==================================================
     # Timestamps
     # ==================================================
 
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    updated_at = models.DateTimeField(
-        auto_now=True,
-    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     # ==================================================
     # Meta
     # ==================================================
 
     class Meta:
-        
+
+        ordering = ["sort_order", "name"]
+
         constraints = [
+
+            # --------------------------------------------------
+            # Unique name under the same parent.
+            #
+            # Does NOT cover root categories because SQL treats
+            # NULL as distinct; the partial constraint below
+            # covers the root case.
+            # --------------------------------------------------
             models.UniqueConstraint(
                 fields=["parent", "name"],
                 name="unique_category_name_per_parent",
             ),
-        ]
 
-        ordering = [
-            "sort_order",
-            "name",
+            # --------------------------------------------------
+            # Unique name across root categories.
+            # --------------------------------------------------
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=models.Q(parent__isnull=True),
+                name="unique_root_category_name",
+            ),
         ]
 
         indexes = [
-
-            models.Index(
-                fields=[
-                    "parent",
-                    "is_active",
-                ],
-            ),
-
-            models.Index(
-                fields=[
-                    "is_active",
-                    "sort_order",
-                ],
-            ),
-
+            models.Index(fields=["parent", "is_active"]),
+            models.Index(fields=["is_active", "sort_order"]),
         ]
 
     # ==================================================
@@ -161,11 +126,7 @@ class ProductCategory(models.Model):
     def __str__(self):
 
         if self.parent:
-
-            return (
-                f"{self.parent.name} → "
-                f"{self.name}"
-            )
+            return f"{self.parent.name} → {self.name}"
 
         return self.name
 
@@ -174,65 +135,36 @@ class ProductCategory(models.Model):
     # ==================================================
 
     def clean(self):
-        """
-        Validate category hierarchy.
-        """
-
-        # ----------------------------------------------
-        # Prevent self-parenting
-        # ----------------------------------------------
 
         if (
             self.parent_id
             and self.pk
             and self.parent_id == self.pk
         ):
-
             raise ValidationError(
-                {
-                    "parent": (
-                        "A category cannot be "
-                        "its own parent."
-                    )
-                }
+                {"parent": "A category cannot be its own parent."}
             )
-
-        # ----------------------------------------------
-        # Prevent circular hierarchy
-        # ----------------------------------------------
 
         if self.parent:
 
             current = self.parent
-
             visited = set()
 
             while current:
 
                 if current.pk in visited:
-
                     raise ValidationError(
-                        {
-                            "parent": (
-                                "Circular category "
-                                "hierarchy detected."
-                            )
-                        }
+                        {"parent": "Circular category hierarchy detected."}
                     )
 
                 visited.add(current.pk)
 
-                if (
-                    self.pk
-                    and current.pk == self.pk
-                ):
-
+                if self.pk and current.pk == self.pk:
                     raise ValidationError(
                         {
                             "parent": (
-                                "A category cannot "
-                                "be an ancestor of "
-                                "itself."
+                                "A category cannot be an ancestor "
+                                "of itself."
                             )
                         }
                     )
@@ -243,18 +175,9 @@ class ProductCategory(models.Model):
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
-
+    def save(self, *args, **kwargs):
         self.full_clean()
-
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Hierarchy Helpers
@@ -262,98 +185,42 @@ class ProductCategory(models.Model):
 
     @property
     def is_root(self):
-        """
-        Determine whether this is a top-level category.
-        """
-
         return self.parent_id is None
 
     @property
     def is_subcategory(self):
-        """
-        Determine whether this category has a parent.
-        """
-
         return self.parent_id is not None
 
-    # ==================================================
-    # Ancestors
-    # ==================================================
-
     def get_ancestors(self):
-        """
-        Return all parent categories from nearest parent
-        to the root.
-        """
 
         ancestors = []
-
         current = self.parent
 
         while current:
-
-            ancestors.append(
-                current,
-            )
-
+            ancestors.append(current)
             current = current.parent
 
         return ancestors
 
-    # ==================================================
-    # Root Category
-    # ==================================================
-
     @property
     def root_category(self):
-        """
-        Return the highest-level parent category.
-        """
 
         current = self
-
         while current.parent:
-
             current = current.parent
 
         return current
 
-    # ==================================================
-    # Children
-    # ==================================================
-
     @property
     def has_children(self):
-        """
-        Determine whether the category has subcategories.
-        """
-
         return self.subcategories.exists()
-
-    # ==================================================
-    # Products
-    # ==================================================
 
     @property
     def product_count(self):
-        """
-        Return the number of products assigned directly
-        to this category.
-        """
-
         return self.products.count()
-
-    # ==================================================
-    # Active Products
-    # ==================================================
 
     @property
     def active_product_count(self):
-        """
-        Return the number of published active products
-        assigned directly to this category.
-        """
-
         return self.products.filter(
             is_active=True,
             is_published=True,

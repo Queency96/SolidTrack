@@ -2,6 +2,8 @@ from django.urls import path
 
 from vendors.views.product_variant_option_value import (
     ProductVariantOptionValueListCreateView,
+)
+from vendors.views.product_details import (
     ProductVariantOptionValueDetailView,
 )
 

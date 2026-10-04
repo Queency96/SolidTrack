@@ -77,7 +77,7 @@ urlpatterns = [
     # ============================================================
 
     path(
-        "categories/<uuid:category_id>/options/",
+        "categories/<slug:category_slug>/options/",
         CategoryOptionsView.as_view(),
         name="category-options",
     ),

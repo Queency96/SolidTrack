@@ -1,6 +1,6 @@
 from django.urls import path
 
-from vendors.views.product_public import (
+from vendors.views.product import (
     PublicProductDetailView,
     PublicProductListView,
 )

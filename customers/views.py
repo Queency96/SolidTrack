@@ -9,7 +9,7 @@ from rest_framework.parsers import (
 )
 from accounts.permissions import IsCustomer
 from .serializers import CustomerProfileSerializer
-from vendors.views.product_public import PublicProductListView
+from vendors.views.product import PublicProductListView
 
 
 class CustomerProfileView(
