@@ -1,10 +1,11 @@
 from django.db.models import Prefetch, Q
 from rest_framework import generics
 from rest_framework.filters import OrderingFilter, SearchFilter
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from common.constant import STATE_CODE_TO_NAME
+from common.pagination import StandardPageNumberPagination
 from common.utils.geo import resolve_browse_state
 
 from vendors.models import (
@@ -23,13 +24,14 @@ from vendors.serializers.product import (
 )
 
 
+# ==========================================================
+# Shared queryset mixin
+# ==========================================================
+
 class PublicProductQuerySetMixin:
     """
-    Shared queryset architecture for customer-facing product
-    endpoints.
-
-    See original docstring for the full visibility and prefetch
-    contract.
+    Shared queryset architecture for the customer-facing
+    product endpoints.
     """
 
     PUBLIC_PRODUCT_FILTERS = {
@@ -169,26 +171,13 @@ class PublicProductQuerySetMixin:
 
 
 # ==========================================================
-# Public Product List
+# Common list-filter logic
 # ==========================================================
 
-class PublicProductListView(
-    PublicProductQuerySetMixin,
-    generics.ListAPIView,
-):
+class _ProductFilterMixin:
     """
-    Customer-facing product listing.
-
-    State scoping precedence:
-
-        1. ?state=<code|name>       explicit override
-        2. GeoLite2 lookup          auto-detect
-        3. User.state               profile fallback
-        4. No filter                all products
+    Shared query-param filtering for both list endpoints.
     """
-
-    serializer_class = PublicProductSerializer
-    permission_classes = [AllowAny]
 
     filter_backends = [SearchFilter, OrderingFilter]
 
@@ -203,24 +192,7 @@ class PublicProductListView(
 
     ordering = ["sort_order", "-created_at"]
 
-    def get_queryset(self):
-        queryset = self.get_public_list_queryset()
-
-        params = self.request.query_params
-
-        # ====================================================
-        # STATE SCOPING
-        # ====================================================
-
-        state_code, _ = resolve_browse_state(self.request)
-
-        if state_code:
-            queryset = queryset.filter(store__state_code=state_code)
-
-        # ====================================================
-        # OTHER FILTERS
-        # ====================================================
-
+    def apply_common_filters(self, queryset, params):
         in_stock = self.parse_boolean(params.get("in_stock"))
 
         if in_stock is True:
@@ -238,25 +210,122 @@ class PublicProductListView(
             queryset = queryset.filter(is_featured=featured)
 
         category = params.get("category")
-
         if category:
             queryset = queryset.filter(category__slug=category)
 
         store = params.get("store")
-
         if store:
             queryset = queryset.filter(store__slug=store)
 
         vendor = params.get("vendor")
-
         if vendor:
             queryset = queryset.filter(vendor_id=vendor)
 
         return queryset
 
+
+# ==========================================================
+# GUEST LIST — no state filter
+# ==========================================================
+
+class PublicProductListView(
+    _ProductFilterMixin,
+    PublicProductQuerySetMixin,
+    generics.ListAPIView,
+):
+    """
+    Guest product listing.
+
+    No state filtering. Returns the full public catalogue.
+
+    Pagination
+    ----------
+    ?page=<int>          Page number (1-based).
+    ?page_size=<int>     Optional override, capped at 100.
+    """
+
+    serializer_class = PublicProductSerializer
+    permission_classes = [AllowAny]
+    pagination_class = StandardPageNumberPagination
+
+    def get_queryset(self):
+        queryset = self.get_public_list_queryset()
+        return self.apply_common_filters(
+            queryset,
+            self.request.query_params,
+        )
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
 
+        serializer = self.get_serializer(
+            page if page is not None else queryset,
+            many=True,
+        )
+
+        meta = {
+            "state_code": None,
+            "state_name": None,
+            "state_source": "guest",
+            "has_products_in_state": True,
+        }
+
+        if page is not None:
+            response = self.get_paginated_response(serializer.data)
+            response.data["meta"] = meta
+            return response
+
+        return Response({"results": serializer.data, "meta": meta})
+
+
+# ==========================================================
+# AUTHENTICATED LIST — state-filtered
+# ==========================================================
+
+class MyStateProductListView(
+    _ProductFilterMixin,
+    PublicProductQuerySetMixin,
+    generics.ListAPIView,
+):
+    """
+    Authenticated product listing with state scoping.
+
+    State resolution precedence (via resolve_browse_state):
+
+        1. ?state=<code|name>          explicit override
+        2. IPStateMapping              learned (>=5 verified votes)
+        3. GeoLite2                    offline
+        4. FreeIPAPI                   HTTPS provider
+        5. ip-api.com                  HTTP provider
+        6. User.state                  profile fallback
+        7. None                        frontend prompts
+
+    Pagination
+    ----------
+    ?page=<int>          Page number (1-based).
+    ?page_size=<int>     Optional override, capped at 100.
+    """
+
+    serializer_class = PublicProductSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardPageNumberPagination
+
+    def get_queryset(self):
+        queryset = self.get_public_list_queryset()
+
+        state_code, _ = resolve_browse_state(self.request)
+
+        if state_code:
+            queryset = queryset.filter(store__state_code=state_code)
+
+        return self.apply_common_filters(
+            queryset,
+            self.request.query_params,
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
 
         serializer = self.get_serializer(
@@ -266,10 +335,18 @@ class PublicProductListView(
 
         state_code, state_source = resolve_browse_state(request)
 
+        # Total matching the *filtered* queryset, not just this page.
+        result_count = (
+            page.paginator.count
+            if page is not None
+            else queryset.count()
+        )
+
         meta = {
             "state_code": state_code,
             "state_name": STATE_CODE_TO_NAME.get(state_code),
             "state_source": state_source,
+            "has_products_in_state": bool(state_code and result_count > 0),
             "state_override_url": (
                 f"{request.path}?state=<state_code>"
             ),
@@ -284,7 +361,7 @@ class PublicProductListView(
 
 
 # ==========================================================
-# Public Product Detail
+# DETAIL — shared by both audiences
 # ==========================================================
 
 class PublicProductDetailView(
@@ -292,11 +369,11 @@ class PublicProductDetailView(
     generics.RetrieveAPIView,
 ):
     """
-    Customer-facing product detail.
+    Product detail. Shared by guest and authenticated callers.
 
-    The detail view is NOT state-filtered. When the product's
-    store state differs from the resolved browse state, the
-    response carries a `state_warning` block for the frontend.
+    Not state-filtered. When the caller is authenticated and the
+    product's store state differs from the resolved browse state,
+    the response carries a `state_warning` block.
     """
 
     serializer_class = PublicProductDetailSerializer
@@ -310,29 +387,31 @@ class PublicProductDetailView(
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-
         data = dict(self.get_serializer(instance).data)
 
-        browse_state_code, _ = resolve_browse_state(request)
-        store_state_code = getattr(instance.store, "state_code", "") or None
+        if request.user.is_authenticated:
+            browse_state_code, _ = resolve_browse_state(request)
+            store_state_code = (
+                getattr(instance.store, "state_code", "") or None
+            )
 
-        if (
-            browse_state_code
-            and store_state_code
-            and browse_state_code != store_state_code
-        ):
-            data["state_warning"] = {
-                "message": (
-                    f"This product is in "
-                    f"{STATE_CODE_TO_NAME.get(store_state_code, store_state_code)}, "
-                    f"not your state "
-                    f"({STATE_CODE_TO_NAME.get(browse_state_code, browse_state_code)}). "
-                    "Delivery may not be available."
-                ),
-                "product_state_code": store_state_code,
-                "product_state_name": STATE_CODE_TO_NAME.get(store_state_code),
-                "browse_state_code": browse_state_code,
-                "browse_state_name": STATE_CODE_TO_NAME.get(browse_state_code),
-            }
+            if (
+                browse_state_code
+                and store_state_code
+                and browse_state_code != store_state_code
+            ):
+                data["state_warning"] = {
+                    "message": (
+                        f"This product is in "
+                        f"{STATE_CODE_TO_NAME.get(store_state_code, store_state_code)}, "
+                        f"not your state "
+                        f"({STATE_CODE_TO_NAME.get(browse_state_code, browse_state_code)}). "
+                        "Delivery may not be available."
+                    ),
+                    "product_state_code": store_state_code,
+                    "product_state_name": STATE_CODE_TO_NAME.get(store_state_code),
+                    "browse_state_code": browse_state_code,
+                    "browse_state_name": STATE_CODE_TO_NAME.get(browse_state_code),
+                }
 
         return Response(data)

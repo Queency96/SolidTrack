@@ -5,6 +5,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+
 urlpatterns = [
     path("admin/", admin.site.urls),
 
@@ -26,6 +27,7 @@ urlpatterns = [
         "products/",
         include("vendors.urls.product_public"),
     ),
-    path("customers/", include("customers.urls"))
+    path("customers/", include("customers.urls")),
+    path("locations/", include("common.urls"),),
 
 ]
