@@ -592,11 +592,15 @@ class OrderFulfillmentService:
     ):
         """
         Rider confirms handover by entering the OTP the
-        customer received for this delivery.
+        customer received for this fulfillment.
 
-        Each rider can only verify the delivery they are
-        currently assigned to. The assignment is resolved
-        from (rider, delivery).
+        Lock order (matching AssignmentService):
+
+            Delivery
+                ↓
+            DeliveryAssignment
+                ↓
+            OrderFulfillment
 
         On success:
             - The active DeliveryAssignment is completed,
@@ -624,43 +628,38 @@ class OrderFulfillmentService:
             raise ValueError("Delivery is required.")
 
         # --------------------------------------------------
-        # Resolve the assignment from (rider, delivery).
-        # This enforces the "each rider is responsible only
-        # for their own delivery" invariant.
+        # Lock order: Delivery → DeliveryAssignment →
+        # OrderFulfillment.
         # --------------------------------------------------
 
+        # 1. Lock the Delivery.
+        delivery = (
+            Delivery.objects
+            .select_for_update()
+            .select_related("fulfillment")
+            .get(pk=delivery.pk)
+        )
+
+        # 2. Lock the DeliveryAssignment.
         assignment = (
             DeliveryAssignment.objects
             .select_for_update()
-            .select_related(
-                "delivery",
-                "delivery__fulfillment",
-            )
             .filter(
                 delivery_id=delivery.pk,
                 rider=rider,
+                is_active=True,
             )
             .first()
         )
 
         if assignment is None:
-
             raise ValueError(
                 "You are not assigned to this delivery."
             )
 
-        if not assignment.is_active:
-
-            raise ValueError(
-                "This assignment is no longer active."
-            )
-
-        # --------------------------------------------------
-        # Lock fulfillment and check state.
-        # --------------------------------------------------
-
+        # 3. Lock the OrderFulfillment.
         fulfillment = cls._lock_fulfillment(
-            fulfillment=assignment.delivery.fulfillment,
+            fulfillment=delivery.fulfillment,
         )
         cls._ensure_not_terminal(fulfillment=fulfillment)
 
@@ -677,7 +676,6 @@ class OrderFulfillmentService:
         # --------------------------------------------------
 
         if fulfillment.delivery_otp_verified_at is not None:
-
             return fulfillment
 
         # --------------------------------------------------
@@ -697,6 +695,11 @@ class OrderFulfillmentService:
         # --------------------------------------------------
 
         submitted = (otp or "").strip()
+
+        if not fulfillment.delivery_otp:
+            raise ValueError(
+                "No delivery OTP has been issued."
+            )
 
         if submitted != fulfillment.delivery_otp:
 
@@ -720,6 +723,14 @@ class OrderFulfillmentService:
 
         # --------------------------------------------------
         # OTP valid. Complete the assignment first.
+        #
+        # This transitions:
+        #   Assignment: ARRIVED_DESTINATION → COMPLETED
+        #   Delivery:   IN_TRANSIT          → DELIVERED
+        #   Rider:      unavailable         → available
+        #
+        # AssignmentService.complete does NOT cascade to
+        # OrderFulfillment. That responsibility is here.
         # --------------------------------------------------
 
         AssignmentService.complete(assignment=assignment)

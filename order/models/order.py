@@ -188,39 +188,6 @@ class Order(models.Model):
     )
 
     # ==================================================
-    # Delivery OTP
-    # ==================================================
-    #
-    # Generated when the first delivery is dispatched.
-    # The customer shares this with the rider to confirm
-    # physical handover. On successful verification, the
-    # order transitions to DELIVERED and escrow is released.
-    # ==================================================
-
-    delivery_otp = models.CharField(
-        max_length=6,
-        blank=True,
-        default="",
-        db_index=True,
-    )
-
-    delivery_otp_generated_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    delivery_otp_verified_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    delivery_otp_attempts = models.PositiveSmallIntegerField(
-        default=0,
-        help_text="Failed verification attempts. Locks after 5.",
-    )
-
-
-    # ==================================================
     # Pricing
     # ==================================================
 
