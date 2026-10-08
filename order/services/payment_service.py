@@ -1,17 +1,64 @@
+"""
+Payment service for order settlement.
+
+Responsibilities
+----------------
+- Generate Dedicated Virtual Accounts (DVAs) for CASH
+  orders
+- Initialize card / bank-transfer payments via Paystack
+- Verify transactions as a backup for the webhook
+- Process Paystack webhooks (charge.success, etc.)
+
+Contract used by CheckoutService
+--------------------------------
+CheckoutService calls:
+
+    PaymentService.generate_dva(order=..., customer=...)
+
+which returns:
+
+    {
+        "reference": "...",           # stored on
+                                      # payment.provider_reference
+        "account_number": "8xxxxxx",  # 10-digit NUBAN
+        "bank_name": "Paystack-Titan",
+        "account_name": "Paystack-Titan / <Business> - <Customer>",
+    }
+
+Idempotency
+-----------
+generate_dva is idempotent per order: if a DVA has already
+been generated for an OrderPayment, it returns the stored
+details without calling Paystack again.
+
+handle_webhook is idempotent per event: it uses the
+WalletTransaction reference pattern for wallet credits,
+and reads the OrderPayment status before mutating anything.
+"""
+
 import hashlib
 import hmac
 import json
 import logging
 
-from decimal import Decimal, ROUND_HALF_UP
-import requests
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import Order, OrderPayment
-from wallet.services import WalletService
+from order.models import (
+    Order,
+    OrderPayment,
+)
+from wallet.service.wallet_service import WalletService
+
+from .exceptions import (
+    InvalidWebhookSignature,
+    PaymentProviderError,
+    WebhookPayloadError,
+)
+from .paystack_client import PaystackClient
 
 
 logger = logging.getLogger(__name__)
@@ -19,333 +66,523 @@ logger = logging.getLogger(__name__)
 
 class PaymentService:
     """
-    Handles order payment initialization, verification,
-    wallet payments, Paystack payments, and final settlement.
-
-    See module docstring in original.
+    Order-facing payment operations.
     """
 
-    PAYSTACK_BASE_URL = "https://api.paystack.co"
+    # Prefix used for card / bank transfer references.
+    TRANSACTION_REFERENCE_PREFIX = "TX-"
 
     # ==================================================
-    # Initialize
-    # ==================================================
-
-    @classmethod
-    def initialize(
-        cls,
-        *,
-        payment,
-        callback_url=None,
-        channels=None,
-    ):
-        if payment.status != OrderPayment.PaymentStatus.PENDING:
-            raise ValueError("Payment is no longer pending.")
-
-        if payment.amount <= Decimal("0.00"):
-            raise ValueError("Payment amount must be greater than zero.")
-
-        if payment.payment_method == OrderPayment.PaymentMethod.WALLET:
-            return cls._process_wallet_payment(payment=payment)
-
-        if payment.provider == OrderPayment.PaymentProvider.PAYSTACK:
-            return cls._initialize_paystack(
-                payment=payment,
-                callback_url=callback_url,
-                channels=channels,
-            )
-
-        raise ValueError("Unsupported payment provider.")
-
-    # ==================================================
-    # Wallet
+    # DVA generation (used by CheckoutService)
     # ==================================================
 
     @classmethod
     @transaction.atomic
-    def _process_wallet_payment(cls, *, payment):
-        payment = (
-            OrderPayment.objects
-            .select_for_update()
-            .select_related("order", "user")
-            .get(pk=payment.pk)
-        )
-
-        if payment.status != OrderPayment.PaymentStatus.PENDING:
-            return payment
-
-        order = (
-            Order.objects
-            .select_for_update()
-            .get(pk=payment.order_id)
-        )
-
-        if order.payment_status == Order.PaymentStatus.PAID:
-            return payment
-
-        wallet = cls._get_customer_wallet(payment.user)
-
-        WalletService.debit(
-            wallet=wallet,
-            amount=payment.amount,
-            description=f"Payment for order {order.order_number}",
-        )
-
-        payment.status = OrderPayment.PaymentStatus.SUCCESSFUL
-        payment.paid_at = timezone.now()
-        payment.gateway_response = {"provider": "wallet", "status": "success"}
-        payment.save(
-            update_fields=[
-                "status", "paid_at", "gateway_response", "updated_at",
-            ]
-        )
-
-        cls._mark_order_paid(order=order, payment=payment)
-        return payment
-
-    # ==================================================
-    # Wallet Lookup
-    # ==================================================
-
-    @staticmethod
-    def _get_customer_wallet(user):
-        wallet = getattr(user, "wallet", None)
-        if wallet is None:
-            raise ValueError("Customer does not have a wallet.")
-        return wallet
-
-    # ==================================================
-    # Paystack Initialize
-    # ==================================================
-
-    @classmethod
-    def _initialize_paystack(
+    def generate_dva(
         cls,
         *,
-        payment,
-        callback_url=None,
-        channels=None,
+        order,
+        customer,
     ):
-        secret_key = getattr(settings, "PAYSTACK_SECRET_KEY", None)
-        if not secret_key:
-            raise ValueError("PAYSTACK_SECRET_KEY is not configured.")
+        """
+        Generate a Paystack Dedicated Virtual Account for
+        a CASH order and attach it to the order's pending
+        OrderPayment.
+
+        Idempotent per order: if the order's payment
+        already has a DVA (identified by a non-empty
+        provider_reference in the DVA namespace), the
+        stored details are returned.
+
+        Returns the dict described in the module
+        docstring.
+        """
+
+        if order is None:
+            raise ValueError("Order is required.")
+
+        if customer is None:
+            raise ValueError("Customer is required.")
+
+        # --------------------------------------------------
+        # Locate the pending CASH payment.
+        # --------------------------------------------------
 
         payment = (
             OrderPayment.objects
             .select_for_update()
-            .select_related("order", "user")
-            .get(pk=payment.pk)
-        )
-
-        if payment.status != OrderPayment.PaymentStatus.PENDING:
-            raise ValueError("Payment is no longer pending.")
-
-        order = payment.order
-        customer = payment.user
-
-        reference = cls._paystack_reference(payment=payment)
-        amount = cls._to_subunit(payment.amount)
-
-        payload = {
-            "email": customer.email,
-            "amount": str(amount),
-            "currency": payment.currency,
-            "reference": reference,
-            "metadata": {
-                "order_id": str(order.id),
-                "order_number": order.order_number,
-                "payment_id": str(payment.id),
-                "payment_reference": str(payment.reference),
-            },
-        }
-
-        if callback_url:
-            payload["callback_url"] = callback_url
-        if channels:
-            payload["channels"] = channels
-
-        headers = {
-            "Authorization": f"Bearer {secret_key}",
-            "Content-Type": "application/json",
-        }
-
-        payment.status = OrderPayment.PaymentStatus.PROCESSING
-        payment.save(update_fields=["status", "updated_at"])
-
-        try:
-            response = requests.post(
-                f"{cls.PAYSTACK_BASE_URL}/transaction/initialize",
-                json=payload,
-                headers=headers,
-                timeout=30,
+            .filter(
+                order=order,
+                status=OrderPayment.PaymentStatus.PENDING,
             )
-            response.raise_for_status()
-            data = response.json()
-        except requests.RequestException as exc:
-            logger.exception("Paystack initialization failed.")
-            payment.status = OrderPayment.PaymentStatus.FAILED
-            payment.failure_reason = str(exc)
-            payment.save(
-                update_fields=["status", "failure_reason", "updated_at"]
-            )
-            raise ValueError("Unable to initialize payment.") from exc
-
-        if not data.get("status"):
-            payment.status = OrderPayment.PaymentStatus.FAILED
-            payment.failure_reason = (
-                data.get("message") or "Paystack initialization failed."
-            )
-            payment.gateway_response = data
-            payment.save(
-                update_fields=[
-                    "status", "failure_reason", "gateway_response", "updated_at",
-                ]
-            )
-            raise ValueError(payment.failure_reason)
-
-        transaction_data = data.get("data") or {}
-        provider_reference = transaction_data.get("reference")
-
-        payment.provider_reference = provider_reference
-        payment.gateway_response = data
-        payment.save(
-            update_fields=[
-                "provider_reference", "gateway_response", "updated_at",
-            ]
-        )
-
-        return {
-            "payment": payment,
-            "authorization_url": transaction_data.get("authorization_url"),
-            "access_code": transaction_data.get("access_code"),
-            "reference": provider_reference,
-        }
-
-    # ==================================================
-    # Paystack Reference
-    # ==================================================
-
-    @staticmethod
-    def _paystack_reference(*, payment):
-        return str(payment.reference)
-
-    # ==================================================
-    # Verify Paystack
-    # ==================================================
-
-    @classmethod
-    def verify_paystack_payment(cls, *, reference):
-        secret_key = getattr(settings, "PAYSTACK_SECRET_KEY", None)
-        if not secret_key:
-            raise ValueError("PAYSTACK_SECRET_KEY is not configured.")
-
-        headers = {"Authorization": f"Bearer {secret_key}"}
-
-        try:
-            response = requests.get(
-                f"{cls.PAYSTACK_BASE_URL}/transaction/verify/{reference}",
-                headers=headers,
-                timeout=30,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except requests.RequestException as exc:
-            logger.exception("Paystack verification failed.")
-            raise ValueError("Unable to verify payment.") from exc
-
-        if not data.get("status"):
-            raise ValueError(
-                data.get("message", "Payment verification failed.")
-            )
-
-        return data
-
-    # ==================================================
-    # Settle Paystack Payment
-    # ==================================================
-
-    @classmethod
-    @transaction.atomic
-    def settle_paystack_payment(cls, *, reference):
-        payment = (
-            OrderPayment.objects
-            .select_for_update()
-            .select_related("order", "user")
-            .filter(provider_reference=reference)
+            .order_by("-created_at")
             .first()
         )
 
         if payment is None:
+
+            raise ValueError(
+                "Order does not have a pending payment."
+            )
+
+        # --------------------------------------------------
+        # Idempotency: if a DVA already exists, return it.
+        # --------------------------------------------------
+
+        existing = cls._extract_dva_details(payment)
+
+        if existing:
+            return existing
+
+        # --------------------------------------------------
+        # Build the Paystack request.
+        # --------------------------------------------------
+
+        first_name, last_name = cls._split_name(
+            customer.get_full_name()
+            or customer.email
+        )
+
+        # ----------------------------------------------
+        # Reference format: DVA-<payment.pk>
+        #
+        # The webhook uses this to find the
+        # OrderPayment on charge.success.
+        # ----------------------------------------------
+
+        reference = f"DVA-{payment.pk}"
+
+        try:
+
+            response = (
+                PaystackClient.create_dedicated_account(
+                    customer_email=customer.email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    phone=getattr(
+                        customer,
+                        "phone_number",
+                        "",
+                    )
+                    or "",
+                    preferred_bank="paystack-titan",
+                    metadata={
+                        "order_id": str(order.pk),
+                        "order_number": order.order_number,
+                        "payment_id": str(payment.pk),
+                        "reference": reference,
+                    },
+                )
+            )
+
+        except PaymentProviderError as exc:
+
+            logger.exception(
+                "DVA generation failed for order %s: %s",
+                order.pk,
+                exc,
+            )
+
+            raise
+
+        data = response.get("data") or {}
+
+        account_number = data.get("account_number")
+        bank = data.get("bank") or {}
+        bank_name = bank.get("name") or "Paystack-Titan"
+        account_name = data.get("account_name") or (
+            f"Paystack-Titan / {customer.get_full_name()}"
+        )
+
+        if not account_number:
+
+            raise PaymentProviderError(
+                "Paystack did not return an account number."
+            )
+
+        # --------------------------------------------------
+        # Persist the DVA details on the payment.
+        # --------------------------------------------------
+
+        payment.provider_reference = reference
+
+        gateway_response = dict(
+            payment.gateway_response or {}
+        )
+
+        gateway_response["dva"] = {
+            "account_number": account_number,
+            "bank_name": bank_name,
+            "account_name": account_name,
+            "paystack_id": data.get("id"),
+            "generated_at": timezone.now().isoformat(),
+        }
+
+        payment.gateway_response = gateway_response
+
+        payment.save(
+            update_fields=[
+                "provider_reference",
+                "gateway_response",
+                "updated_at",
+            ],
+        )
+
+        return {
+            "reference": reference,
+            "account_number": account_number,
+            "bank_name": bank_name,
+            "account_name": account_name,
+        }
+
+    # ==================================================
+    # Card / transfer initialization
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
+    def initialize_transaction(
+        cls,
+        *,
+        order,
+        customer,
+    ):
+        """
+        Initialize a Paystack transaction for CARD /
+        BANK_TRANSFER orders and return the authorization
+        URL.
+
+        Idempotent per order: returns the existing
+        authorization URL if one has already been
+        generated.
+        """
+
+        if order is None:
+            raise ValueError("Order is required.")
+
+        if customer is None:
+            raise ValueError("Customer is required.")
+
+        payment = (
+            OrderPayment.objects
+            .select_for_update()
+            .filter(
+                order=order,
+                status=OrderPayment.PaymentStatus.PENDING,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        if payment is None:
+
+            raise ValueError(
+                "Order does not have a pending payment."
+            )
+
+        # --------------------------------------------------
+        # Reuse existing authorization URL.
+        # --------------------------------------------------
+
+        existing = cls._extract_authorization_url(payment)
+
+        if existing:
+            return existing
+
+        # --------------------------------------------------
+        # Reference format: TX-<payment.pk>
+        # --------------------------------------------------
+
+        reference = f"{cls.TRANSACTION_REFERENCE_PREFIX}{payment.pk}"
+
+        callback_url = getattr(
+            settings,
+            "PAYSTACK_CALLBACK_URL",
+            None,
+        )
+
+        response = PaystackClient.initialize_transaction(
+            email=customer.email,
+            amount_kobo=cls._to_kobo(payment.amount),
+            reference=reference,
+            callback_url=callback_url,
+            metadata={
+                "order_id": str(order.pk),
+                "order_number": order.order_number,
+                "payment_id": str(payment.pk),
+            },
+        )
+
+        data = response.get("data") or {}
+
+        authorization_url = data.get("authorization_url")
+
+        if not authorization_url:
+
+            raise PaymentProviderError(
+                "Paystack did not return an "
+                "authorization URL."
+            )
+
+        payment.provider_reference = reference
+
+        gateway_response = dict(
+            payment.gateway_response or {}
+        )
+
+        gateway_response["transaction"] = {
+            "authorization_url": authorization_url,
+            "access_code": data.get("access_code"),
+            "reference": data.get("reference") or reference,
+            "initialized_at": timezone.now().isoformat(),
+        }
+
+        payment.gateway_response = gateway_response
+
+        payment.save(
+            update_fields=[
+                "provider_reference",
+                "gateway_response",
+                "updated_at",
+            ],
+        )
+
+        return {
+            "authorization_url": authorization_url,
+            "access_code": data.get("access_code"),
+            "reference": data.get("reference") or reference,
+        }
+
+    # ==================================================
+    # Transaction verification (backup for the webhook)
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
+    def verify_transaction(
+        cls,
+        *,
+        order,
+    ):
+        """
+        Verify a payment directly with Paystack.
+
+        Safe to call after a webhook (idempotent) or in
+        place of one when the client returns from
+        Paystack but the webhook has not yet fired.
+        """
+
+        payment = (
+            OrderPayment.objects
+            .select_for_update()
+            .filter(order=order)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if payment is None:
+            raise ValueError(
+                "Order does not have a payment."
+            )
+
+        if payment.status == (
+            OrderPayment.PaymentStatus.SUCCESSFUL
+        ):
+            return payment
+
+        reference = payment.provider_reference
+
+        if not reference:
+
+            raise ValueError(
+                "Payment does not have a provider reference."
+            )
+
+        response = PaystackClient.verify_transaction(
+            reference=reference,
+        )
+
+        data = response.get("data") or {}
+
+        if data.get("status") != "success":
+
+            return payment
+
+        cls._settle_order_payment(
+            payment=payment,
+            provider_payload=data,
+        )
+
+        return payment
+
+    # ==================================================
+    # Webhook handling
+    # ==================================================
+
+    @classmethod
+    def handle_webhook(
+        cls,
+        *,
+        payload: bytes,
+        signature: str,
+    ) -> None:
+        """
+        Verify and process a Paystack webhook.
+
+        Raises InvalidWebhookSignature on HMAC mismatch
+        and WebhookPayloadError on malformed payloads.
+        """
+
+        cls._verify_signature(
+            payload=payload,
+            signature=signature,
+        )
+
+        try:
+            body = json.loads(payload)
+
+        except json.JSONDecodeError as exc:
+
+            raise WebhookPayloadError(
+                "Payload is not valid JSON."
+            ) from exc
+
+        event_type = body.get("event")
+
+        if not event_type:
+
+            raise WebhookPayloadError(
+                "Missing event type."
+            )
+
+        data = body.get("data") or {}
+
+        handler = cls._EVENT_HANDLERS.get(event_type)
+
+        if handler is None:
+
+            logger.info(
+                "Ignoring unhandled Paystack event: %s",
+                event_type,
+            )
+
+            return
+
+        handler(data)
+
+    # ==================================================
+    # Event handlers
+    # ==================================================
+
+    @classmethod
+    @transaction.atomic
+    def _handle_charge_success(cls, data):
+        """
+        Handle charge.success for DVA and card payments.
+
+        The payment is looked up by:
+
+        1. payment.provider_reference == data.reference, or
+        2. payment.id == metadata.payment_id
+        """
+
+        reference = data.get("reference")
+
+        metadata = data.get("metadata") or {}
+
+        payment = None
+
+        if reference:
+
             payment = (
                 OrderPayment.objects
                 .select_for_update()
-                .select_related("order", "user")
-                .filter(reference=reference)
+                .filter(provider_reference=reference)
+                .first()
+            )
+
+        if payment is None and metadata.get("payment_id"):
+
+            payment = (
+                OrderPayment.objects
+                .select_for_update()
+                .filter(pk=metadata["payment_id"])
                 .first()
             )
 
         if payment is None:
-            raise ValueError("Payment transaction not found.")
 
-        if payment.status == OrderPayment.PaymentStatus.SUCCESSFUL:
-            return payment
-
-        verification = cls.verify_paystack_payment(reference=reference)
-        transaction_data = verification.get("data") or {}
-
-        gateway_status = transaction_data.get("status")
-        gateway_amount = transaction_data.get("amount")
-        expected_amount = cls._to_subunit(payment.amount)
-
-        gateway_reference = transaction_data.get("reference")
-        if gateway_reference != reference:
-            raise ValueError("Payment reference mismatch.")
-
-        try:
-            gateway_amount = int(gateway_amount)
-        except (TypeError, ValueError):
-            raise ValueError(
-                "Invalid payment amount returned by payment provider."
+            logger.warning(
+                "Paystack webhook did not match any "
+                "OrderPayment (reference=%s).",
+                reference,
             )
 
-        if gateway_amount != expected_amount:
-            payment.status = OrderPayment.PaymentStatus.FAILED
-            payment.failure_reason = (
-                "Payment amount does not match the order amount."
-            )
-            payment.gateway_response = verification
-            payment.save(
-                update_fields=[
-                    "status", "failure_reason", "gateway_response", "updated_at",
-                ]
-            )
-            raise ValueError(
-                "Payment amount does not match the order amount."
-            )
+            return
 
-        if gateway_status != "success":
-            payment.gateway_response = verification
-            payment.failure_reason = (
-                f"Paystack transaction status: {gateway_status}"
-            )
-            payment.status = OrderPayment.PaymentStatus.FAILED
-            payment.save(
-                update_fields=[
-                    "status", "failure_reason", "gateway_response", "updated_at",
-                ]
-            )
-            return payment
+        if payment.status == (
+            OrderPayment.PaymentStatus.SUCCESSFUL
+        ):
 
-        payment.status = OrderPayment.PaymentStatus.SUCCESSFUL
-        payment.paid_at = timezone.now()
-        payment.provider_reference = gateway_reference
-        payment.gateway_response = verification
+            # Idempotent replay.
+            return
+
+        cls._settle_order_payment(
+            payment=payment,
+            provider_payload=data,
+        )
+
+    # ==================================================
+    # Settlement
+    # ==================================================
+
+    @classmethod
+    def _settle_order_payment(
+        cls,
+        *,
+        payment,
+        provider_payload,
+    ):
+        """
+        Mark an OrderPayment SUCCESSFUL and update its
+        Order.
+        """
+
+        now = timezone.now()
+
+        payment.status = (
+            OrderPayment.PaymentStatus.SUCCESSFUL
+        )
+        payment.paid_at = now
+
+        gateway_response = dict(
+            payment.gateway_response or {}
+        )
+        gateway_response["settlement"] = {
+            "settled_at": now.isoformat(),
+            "provider_reference": provider_payload.get(
+                "reference"
+            ),
+            "amount": str(
+                provider_payload.get("amount", "")
+            ),
+            "channel": provider_payload.get("channel"),
+        }
+
+        payment.gateway_response = gateway_response
+
         payment.save(
             update_fields=[
-                "status", "paid_at", "provider_reference",
-                "gateway_response", "updated_at",
-            ]
+                "status",
+                "paid_at",
+                "gateway_response",
+                "updated_at",
+            ],
         )
+
+        # --------------------------------------------------
+        # Update the order.
+        # --------------------------------------------------
 
         order = (
             Order.objects
@@ -353,93 +590,168 @@ class PaymentService:
             .get(pk=payment.order_id)
         )
 
-        cls._mark_order_paid(order=order, payment=payment)
-        return payment
+        if order.payment_status != Order.PaymentStatus.PAID:
+
+            order.payment_status = Order.PaymentStatus.PAID
+            order.paid_at = now
+
+            if order.status == Order.Status.PENDING:
+
+                order.status = Order.Status.CONFIRMED
+                order.confirmed_at = now
+
+            order.save(
+                update_fields=[
+                    "payment_status",
+                    "paid_at",
+                    "status",
+                    "confirmed_at",
+                    "updated_at",
+                ],
+            )
 
     # ==================================================
-    # Mark Order Paid
+    # Signature verification
     # ==================================================
 
     @staticmethod
-    def _mark_order_paid(*, order, payment):
-        if order.payment_status == Order.PaymentStatus.PAID:
-            return
+    def _verify_signature(
+        *,
+        payload: bytes,
+        signature: str,
+    ) -> None:
+        """
+        Compute HMAC-SHA512 over the raw payload and
+        compare to the header value using a
+        constant-time comparison.
+        """
 
-        order.payment_status = Order.PaymentStatus.PAID
-        order.paid_at = payment.paid_at or timezone.now()
-
-        if order.status == Order.Status.PENDING:
-            order.status = Order.Status.CONFIRMED
-            order.confirmed_at = timezone.now()
-
-        order.save(
-            update_fields=[
-                "payment_status", "paid_at", "status", "confirmed_at", "updated_at",
-            ]
+        secret = getattr(
+            settings,
+            "PAYSTACK_SECRET_KEY",
+            "",
         )
 
-    # ==================================================
-    # Webhook Signature
-    # ==================================================
+        if not secret:
 
-    @staticmethod
-    def verify_webhook_signature(*, payload, signature):
-        secret_key = getattr(settings, "PAYSTACK_SECRET_KEY", None)
-        if not secret_key:
-            return False
+            raise InvalidWebhookSignature(
+                "PAYSTACK_SECRET_KEY is not configured."
+            )
 
-        expected = hmac.new(
-            secret_key.encode("utf-8"),
+        computed = hmac.new(
+            secret.encode("utf-8"),
             payload,
             hashlib.sha512,
         ).hexdigest()
 
-        return hmac.compare_digest(expected, signature or "")
+        if not hmac.compare_digest(computed, signature):
+
+            raise InvalidWebhookSignature(
+                "Signature mismatch."
+            )
 
     # ==================================================
-    # Webhook
-    # ==================================================
-
-    @classmethod
-    def handle_webhook(cls, *, payload, signature):
-        if not cls.verify_webhook_signature(payload=payload, signature=signature):
-            raise PermissionError("Invalid Paystack webhook signature.")
-
-        try:
-            event = json.loads(payload.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ValueError("Invalid webhook payload.") from exc
-
-        event_name = event.get("event")
-        data = event.get("data") or {}
-        reference = data.get("reference")
-
-        if not reference:
-            return {
-                "processed": False,
-                "reason": "Missing transaction reference.",
-            }
-
-        if event_name == "charge.success":
-            payment = cls.settle_paystack_payment(reference=reference)
-            return {
-                "processed": True,
-                "event": event_name,
-                "payment_id": str(payment.id),
-            }
-
-        logger.info("Ignoring Paystack event: %s", event_name)
-        return {"processed": False, "event": event_name}
-
-    # ==================================================
-    # Currency Conversion
+    # Helpers
     # ==================================================
 
     @staticmethod
-    def _to_subunit(amount):
-        amount = Decimal(str(amount))
+    def _extract_dva_details(payment):
+        """
+        Return the stored DVA details for a payment, or
+        None when no DVA has been generated.
+        """
+
+        gateway_response = payment.gateway_response or {}
+
+        dva = gateway_response.get("dva")
+
+        if not dva:
+            return None
+
+        account_number = dva.get("account_number")
+
+        if not account_number:
+            return None
+
+        return {
+            "reference": payment.provider_reference,
+            "account_number": account_number,
+            "bank_name": dva.get("bank_name", ""),
+            "account_name": dva.get("account_name", ""),
+        }
+
+    # ==================================================
+
+    @staticmethod
+    def _extract_authorization_url(payment):
+        """
+        Return the stored authorization URL for a payment,
+        or None when none has been generated.
+        """
+
+        gateway_response = payment.gateway_response or {}
+
+        transaction = gateway_response.get("transaction")
+
+        if not transaction:
+            return None
+
+        url = transaction.get("authorization_url")
+
+        if not url:
+            return None
+
+        return {
+            "authorization_url": url,
+            "access_code": transaction.get("access_code"),
+            "reference": transaction.get("reference"),
+        }
+
+    # ==================================================
+
+    @staticmethod
+    def _split_name(full_name):
+        """
+        Split a full name into (first, last), tolerating
+        empty or single-token names.
+        """
+
+        parts = (full_name or "").strip().split()
+
+        if not parts:
+            return "", ""
+
+        if len(parts) == 1:
+            return parts[0], ""
+
+        return parts[0], " ".join(parts[1:])
+
+    # ==================================================
+
+    @staticmethod
+    def _to_kobo(amount) -> int:
+        """
+        Convert a Decimal amount in NGN to kobo (int).
+        """
+
         return int(
-            (amount * Decimal("100")).quantize(
-                Decimal("1"), rounding=ROUND_HALF_UP,
-            )
+            (Decimal(str(amount)) * Decimal("100"))
+            .quantize(Decimal("1"))
         )
+
+    # ==================================================
+    # Event dispatch table
+    # ==================================================
+
+    # Populated below the class body to allow forward
+    # references without circular imports.
+    _EVENT_HANDLERS = {}
+
+
+# ==================================================
+# Bind handlers to event names
+# ==================================================
+
+PaymentService._EVENT_HANDLERS = {
+    "charge.success": PaymentService._handle_charge_success,
+}

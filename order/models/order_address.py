@@ -1,6 +1,13 @@
 import uuid
+
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+)
 from django.db import models
 
 
@@ -8,8 +15,9 @@ class OrderAddress(models.Model):
     """
     Address snapshot attached to an order.
 
-    The address is copied at checkout so that changes to the user's
-    saved address later do not modify historical order records.
+    The address is copied at checkout so that changes to the
+    user's saved address later do not modify historical order
+    records.
     """
 
     class AddressType(models.TextChoices):
@@ -55,6 +63,7 @@ class OrderAddress(models.Model):
     address_line_2 = models.CharField(
         max_length=255,
         blank=True,
+        default="",
     )
 
     city = models.CharField(
@@ -73,25 +82,31 @@ class OrderAddress(models.Model):
     postal_code = models.CharField(
         max_length=20,
         blank=True,
+        default="",
     )
 
     landmark = models.CharField(
         max_length=255,
         blank=True,
+        default="",
     )
 
     latitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
+        max_digits=10,
+        decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-90")),
+            MaxValueValidator(Decimal("90")),
+        ],
     )
 
     longitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
+        max_digits=10,
+        decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-180")),
+            MaxValueValidator(Decimal("180")),
+        ],
     )
 
     created_at = models.DateTimeField(
@@ -103,6 +118,7 @@ class OrderAddress(models.Model):
     )
 
     class Meta:
+
         db_table = "order_addresses"
 
         constraints = [
@@ -124,27 +140,32 @@ class OrderAddress(models.Model):
         ]
 
     def __str__(self):
+
         return (
             f"{self.address_type} address "
             f"for order {self.order_id}"
         )
 
     def clean(self):
-        if self.address_type not in dict(
-            self.AddressType.choices
+
+        if (
+            self.address_type
+            not in self.AddressType.values
         ):
             raise ValidationError(
-                {"address_type": "Invalid address type."}
+                {
+                    "address_type": (
+                        "Invalid address type."
+                    )
+                }
             )
 
-        if self.latitude is not None:
-            if not -90 <= self.latitude <= 90:
-                raise ValidationError(
-                    {"latitude": "Latitude must be between -90 and 90."}
-                )
+    def save(self, *args, **kwargs):
 
-        if self.longitude is not None:
-            if not -180 <= self.longitude <= 180:
-                raise ValidationError(
-                    {"longitude": "Longitude must be between -180 and 180."}
-                )
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
+        super().save(*args, **kwargs)

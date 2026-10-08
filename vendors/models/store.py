@@ -1,9 +1,11 @@
 from decimal import Decimal
 import uuid
-
 from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+)
 from django.db import models
-
 from common.constant import (
     NIGERIA_STATE_CHOICES,
     VALID_STATE_CODES,
@@ -15,7 +17,9 @@ class VendorStore(models.Model):
     """
     Physical or operational store belonging to a vendor.
 
-    See original docstring.
+    A vendor may operate multiple stores. Each store is a
+    distinct pickup location and can be independently set
+    as the vendor's default store.
     """
 
     id = models.UUIDField(
@@ -23,6 +27,10 @@ class VendorStore(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
+
+    # ==================================================
+    # Vendor
+    # ==================================================
 
     vendor = models.ForeignKey(
         "vendors.VendorProfile",
@@ -34,25 +42,41 @@ class VendorStore(models.Model):
     # Store Identity
     # ==================================================
 
-    name = models.CharField(max_length=255)
+    name = models.CharField(
+        max_length=255,
+    )
 
-    slug = models.SlugField(max_length=255)
+    slug = models.SlugField(
+        max_length=255,
+    )
 
-    description = models.TextField(blank=True, default="")
+    description = models.TextField(
+        blank=True,
+        default="",
+    )
 
     # ==================================================
     # Contact
     # ==================================================
 
-    phone = models.CharField(max_length=30, blank=True, default="")
+    phone = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+    )
 
-    email = models.EmailField(blank=True, default="")
+    email = models.EmailField(
+        blank=True,
+        default="",
+    )
 
     # ==================================================
     # Address
     # ==================================================
 
-    address_line_1 = models.CharField(max_length=255)
+    address_line_1 = models.CharField(
+        max_length=255,
+    )
 
     address_line_2 = models.CharField(
         max_length=255,
@@ -60,9 +84,13 @@ class VendorStore(models.Model):
         default="",
     )
 
-    city = models.CharField(max_length=100)
+    city = models.CharField(
+        max_length=100,
+    )
 
-    state = models.CharField(max_length=100)
+    state = models.CharField(
+        max_length=100,
+    )
 
     # --------------------------------------------------
     # State code for product scoping.
@@ -81,7 +109,10 @@ class VendorStore(models.Model):
         ),
     )
 
-    country = models.CharField(max_length=100, default="Nigeria")
+    country = models.CharField(
+        max_length=100,
+        default="Nigeria",
+    )
 
     postal_code = models.CharField(
         max_length=20,
@@ -96,36 +127,57 @@ class VendorStore(models.Model):
     latitude = models.DecimalField(
         max_digits=10,
         decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-90")),
+            MaxValueValidator(Decimal("90")),
+        ],
     )
 
     longitude = models.DecimalField(
         max_digits=10,
         decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-180")),
+            MaxValueValidator(Decimal("180")),
+        ],
     )
 
     # ==================================================
     # Store Status
     # ==================================================
 
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+    )
 
-    is_verified = models.BooleanField(default=False)
+    is_verified = models.BooleanField(
+        default=False,
+    )
 
     # ==================================================
     # Order / Pickup Controls
     # ==================================================
 
-    accepting_orders = models.BooleanField(default=True)
+    accepting_orders = models.BooleanField(
+        default=True,
+    )
 
-    accepting_pickups = models.BooleanField(default=True)
+    accepting_pickups = models.BooleanField(
+        default=True,
+    )
 
-    pickup_instructions = models.TextField(blank=True, default="")
+    pickup_instructions = models.TextField(
+        blank=True,
+        default="",
+    )
 
     # ==================================================
     # Preparation
     # ==================================================
 
-    preparation_time_minutes = models.PositiveIntegerField(default=15)
+    preparation_time_minutes = models.PositiveIntegerField(
+        default=15,
+    )
 
     # ==================================================
     # Store Image
@@ -141,15 +193,21 @@ class VendorStore(models.Model):
     # Default Store
     # ==================================================
 
-    is_default = models.BooleanField(default=False)
+    is_default = models.BooleanField(
+        default=False,
+    )
 
     # ==================================================
     # Timestamps
     # ==================================================
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
 
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     # ==================================================
     # Meta
@@ -160,10 +218,12 @@ class VendorStore(models.Model):
         ordering = ["-is_default", "name"]
 
         constraints = [
+
             models.UniqueConstraint(
                 fields=["vendor", "slug"],
                 name="unique_vendor_store_slug",
             ),
+
             models.UniqueConstraint(
                 fields=["vendor"],
                 condition=models.Q(is_default=True),
@@ -172,10 +232,22 @@ class VendorStore(models.Model):
         ]
 
         indexes = [
-            models.Index(fields=["vendor", "is_active"]),
-            models.Index(fields=["latitude", "longitude"]),
-            models.Index(fields=["is_active", "accepting_pickups"]),
-            models.Index(fields=["state_code", "is_active"]),
+
+            models.Index(
+                fields=["vendor", "is_active"],
+            ),
+
+            models.Index(
+                fields=["latitude", "longitude"],
+            ),
+
+            models.Index(
+                fields=["is_active", "accepting_pickups"],
+            ),
+
+            models.Index(
+                fields=["state_code", "is_active"],
+            ),
         ]
 
     # ==================================================
@@ -183,6 +255,7 @@ class VendorStore(models.Model):
     # ==================================================
 
     def __str__(self):
+
         return f"{self.vendor} - {self.name}"
 
     # ==================================================
@@ -191,51 +264,63 @@ class VendorStore(models.Model):
 
     def clean(self):
 
-        if not (Decimal("-90") <= self.latitude <= Decimal("90")):
-            raise ValidationError(
-                {"latitude": "Latitude must be between -90 and 90."}
-            )
-
-        if not (Decimal("-180") <= self.longitude <= Decimal("180")):
-            raise ValidationError(
-                {"longitude": "Longitude must be between -180 and 180."}
-            )
-
-        if self.preparation_time_minutes < 0:
-            raise ValidationError(
-                {
-                    "preparation_time_minutes": (
-                        "Preparation time cannot be negative."
-                    )
-                }
-            )
-
         # --------------------------------------------------
         # Derive state_code from state when either is present.
         # --------------------------------------------------
 
         if self.state:
-            code = normalize_state(self.state)
 
-            if code:
-                self.state_code = code
+            derived_code = normalize_state(self.state)
 
-        if self.state_code and self.state_code not in VALID_STATE_CODES:
+            if derived_code:
+                self.state_code = derived_code
+
+        if (
+            self.state_code
+            and self.state_code not in VALID_STATE_CODES
+        ):
+
             raise ValidationError(
                 {
                     "state_code": (
-                        f"'{self.state_code}' is not a valid "
-                        "Nigerian state code."
+                        f"'{self.state_code}' is not a "
+                        "valid Nigerian state code."
                     )
                 }
             )
+
+        if self.state and self.state_code:
+
+            expected = normalize_state(self.state)
+
+            if (
+                expected
+                and expected != self.state_code
+            ):
+
+                raise ValidationError(
+                    {
+                        "state_code": (
+                            f"state_code "
+                            f"'{self.state_code}' does "
+                            f"not match state "
+                            f"'{self.state}'."
+                        )
+                    }
+                )
 
     # ==================================================
     # Save
     # ==================================================
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
         super().save(*args, **kwargs)
 
     # ==================================================
@@ -244,6 +329,7 @@ class VendorStore(models.Model):
 
     @property
     def can_accept_pickup(self):
+
         return (
             self.is_active
             and self.is_verified
@@ -256,6 +342,7 @@ class VendorStore(models.Model):
 
     @property
     def can_accept_orders(self):
+
         return (
             self.is_active
             and self.is_verified
@@ -268,9 +355,10 @@ class VendorStore(models.Model):
 
     @property
     def location(self):
+
         return {
-            "latitude": self.latitude,
-            "longitude": self.longitude,
+            "latitude": float(self.latitude),
+            "longitude": float(self.longitude),
         }
 
     # ==================================================
@@ -282,10 +370,19 @@ class VendorStore(models.Model):
         VendorStore.objects.filter(
             vendor=self.vendor,
             is_default=True,
-        ).exclude(pk=self.pk).update(is_default=False)
+        ).exclude(
+            pk=self.pk,
+        ).update(
+            is_default=False,
+        )
 
         self.is_default = True
 
-        self.save(update_fields=["is_default", "updated_at"])
+        self.save(
+            update_fields=[
+                "is_default",
+                "updated_at",
+            ],
+        )
 
         return self

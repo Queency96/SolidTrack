@@ -1,7 +1,10 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
+
 from common.models import TimeStampedModel
-import uuid
+
 
 class DispatchHistory(TimeStampedModel):
     """
@@ -11,79 +14,105 @@ class DispatchHistory(TimeStampedModel):
     one history record.
     """
 
+    # ==================================================
+    # Event Type
+    # ==================================================
+
     class EventType(models.TextChoices):
+
         DELIVERY_CREATED = (
             "DELIVERY_CREATED",
             "Delivery Created",
         )
+
         DISPATCH_STARTED = (
             "DISPATCH_STARTED",
             "Dispatch Started",
         )
+
         OFFER_CREATED = (
             "OFFER_CREATED",
             "Offer Created",
         )
+
         OFFER_ACCEPTED = (
             "OFFER_ACCEPTED",
             "Offer Accepted",
         )
+
         OFFER_REJECTED = (
             "OFFER_REJECTED",
             "Offer Rejected",
         )
+
         OFFER_EXPIRED = (
             "OFFER_EXPIRED",
             "Offer Expired",
         )
+
         OFFER_CANCELLED = (
             "OFFER_CANCELLED",
             "Offer Cancelled",
         )
+
         RIDER_ASSIGNED = (
             "RIDER_ASSIGNED",
             "Rider Assigned",
         )
+
         ASSIGNMENT_ACCEPTED = (
             "ASSIGNMENT_ACCEPTED",
             "Assignment Accepted",
         )
+
         PICKUP_STARTED = (
             "PICKUP_STARTED",
             "Pickup Started",
         )
+
         ARRIVED_PICKUP = (
             "ARRIVED_PICKUP",
             "Arrived Pickup",
         )
+
         PICKUP_COMPLETED = (
             "PICKUP_COMPLETED",
             "Pickup Completed",
         )
+
         DELIVERY_STARTED = (
             "DELIVERY_STARTED",
             "Delivery Started",
         )
+
         ARRIVED_DESTINATION = (
             "ARRIVED_DESTINATION",
             "Arrived Destination",
         )
+
         DELIVERY_COMPLETED = (
             "DELIVERY_COMPLETED",
             "Delivery Completed",
         )
+
         ASSIGNMENT_CANCELLED = (
             "ASSIGNMENT_CANCELLED",
             "Assignment Cancelled",
         )
+
         ASSIGNMENT_REASSIGNED = (
             "ASSIGNMENT_REASSIGNED",
             "Assignment Reassigned",
         )
+
         DISPATCH_FAILED = (
             "DISPATCH_FAILED",
             "Dispatch Failed",
         )
+
+    # ==================================================
+    # ID
+    # ==================================================
 
     id = models.UUIDField(
         primary_key=True,
@@ -91,11 +120,19 @@ class DispatchHistory(TimeStampedModel):
         editable=False,
     )
 
+    # ==================================================
+    # Delivery
+    # ==================================================
+
     delivery = models.ForeignKey(
         "deliveries.Delivery",
         on_delete=models.CASCADE,
         related_name="dispatch_history",
     )
+
+    # ==================================================
+    # Assignment
+    # ==================================================
 
     assignment = models.ForeignKey(
         "deliveries.DeliveryAssignment",
@@ -105,6 +142,10 @@ class DispatchHistory(TimeStampedModel):
         related_name="dispatch_history",
     )
 
+    # ==================================================
+    # Offer
+    # ==================================================
+
     offer = models.ForeignKey(
         "deliveries.DeliveryOffer",
         on_delete=models.SET_NULL,
@@ -112,6 +153,10 @@ class DispatchHistory(TimeStampedModel):
         blank=True,
         related_name="dispatch_history",
     )
+
+    # ==================================================
+    # Rider
+    # ==================================================
 
     rider = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -121,13 +166,17 @@ class DispatchHistory(TimeStampedModel):
         related_name="dispatch_history",
     )
 
+    # ==================================================
+    # Event
+    # ==================================================
+
     event_type = models.CharField(
         max_length=50,
         choices=EventType.choices,
     )
 
     status = models.CharField(
-        max_length=50,
+        max_length=30,
         blank=True,
         default="",
     )
@@ -147,31 +196,44 @@ class DispatchHistory(TimeStampedModel):
         blank=True,
     )
 
+    # ==================================================
+    # Meta
+    # ==================================================
+
     class Meta:
+
         ordering = ("created_at",)
 
         indexes = [
+
             models.Index(
                 fields=[
                     "delivery",
                     "created_at",
-                ]
+                ],
             ),
+
             models.Index(
                 fields=[
                     "event_type",
                     "created_at",
-                ]
+                ],
             ),
+
             models.Index(
                 fields=[
                     "rider",
                     "created_at",
-                ]
+                ],
             ),
         ]
 
+    # ==================================================
+    # String
+    # ==================================================
+
     def __str__(self):
+
         return (
             f"{self.delivery} - "
             f"{self.event_type}"

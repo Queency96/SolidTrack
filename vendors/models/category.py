@@ -1,7 +1,9 @@
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
+
 from cloudinary.models import CloudinaryField
-import uuid
 
 
 class ProductCategory(models.Model):
@@ -24,7 +26,9 @@ class ProductCategory(models.Model):
     # Identity
     # ==================================================
 
-    name = models.CharField(max_length=150)
+    name = models.CharField(
+        max_length=150,
+    )
 
     slug = models.SlugField(
         max_length=180,
@@ -47,7 +51,10 @@ class ProductCategory(models.Model):
     # Description
     # ==================================================
 
-    description = models.TextField(blank=True, default="")
+    description = models.TextField(
+        blank=True,
+        default="",
+    )
 
     meta_title = models.CharField(
         max_length=180,
@@ -65,22 +72,35 @@ class ProductCategory(models.Model):
     # Display
     # ==================================================
 
-    image = CloudinaryField("image", blank=True, null=True)
+    image = CloudinaryField(
+        "image",
+        blank=True,
+        null=True,
+    )
 
-    sort_order = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveIntegerField(
+        default=0,
+    )
 
     # ==================================================
     # Status
     # ==================================================
 
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+    )
 
     # ==================================================
     # Timestamps
     # ==================================================
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     # ==================================================
     # Meta
@@ -115,8 +135,14 @@ class ProductCategory(models.Model):
         ]
 
         indexes = [
-            models.Index(fields=["parent", "is_active"]),
-            models.Index(fields=["is_active", "sort_order"]),
+
+            models.Index(
+                fields=["parent", "is_active"],
+            ),
+
+            models.Index(
+                fields=["is_active", "sort_order"],
+            ),
         ]
 
     # ==================================================
@@ -141,42 +167,62 @@ class ProductCategory(models.Model):
             and self.pk
             and self.parent_id == self.pk
         ):
+
             raise ValidationError(
-                {"parent": "A category cannot be its own parent."}
+                {
+                    "parent": (
+                        "A category cannot be its own "
+                        "parent."
+                    )
+                }
             )
 
-        if self.parent:
+        if not self.parent:
+            return
 
-            current = self.parent
-            visited = set()
+        current = self.parent
+        visited = set()
 
-            while current:
+        while current:
 
-                if current.pk in visited:
-                    raise ValidationError(
-                        {"parent": "Circular category hierarchy detected."}
-                    )
+            if current.pk in visited:
 
-                visited.add(current.pk)
+                raise ValidationError(
+                    {
+                        "parent": (
+                            "Circular category hierarchy "
+                            "detected."
+                        )
+                    }
+                )
 
-                if self.pk and current.pk == self.pk:
-                    raise ValidationError(
-                        {
-                            "parent": (
-                                "A category cannot be an ancestor "
-                                "of itself."
-                            )
-                        }
-                    )
+            visited.add(current.pk)
 
-                current = current.parent
+            if self.pk and current.pk == self.pk:
+
+                raise ValidationError(
+                    {
+                        "parent": (
+                            "A category cannot be an "
+                            "ancestor of itself."
+                        )
+                    }
+                )
+
+            current = current.parent
 
     # ==================================================
     # Save
     # ==================================================
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
         super().save(*args, **kwargs)
 
     # ==================================================
@@ -185,19 +231,29 @@ class ProductCategory(models.Model):
 
     @property
     def is_root(self):
+
         return self.parent_id is None
 
     @property
     def is_subcategory(self):
+
         return self.parent_id is not None
 
     def get_ancestors(self):
 
         ancestors = []
+        visited = set()
+
         current = self.parent
 
         while current:
+
+            if current.pk in visited:
+                break
+
+            visited.add(current.pk)
             ancestors.append(current)
+
             current = current.parent
 
         return ancestors
@@ -206,21 +262,32 @@ class ProductCategory(models.Model):
     def root_category(self):
 
         current = self
+        visited = set()
+
         while current.parent:
+
+            if current.pk in visited:
+                break
+
+            visited.add(current.pk)
+
             current = current.parent
 
         return current
 
     @property
     def has_children(self):
+
         return self.subcategories.exists()
 
     @property
     def product_count(self):
+
         return self.products.count()
 
     @property
     def active_product_count(self):
+
         return self.products.filter(
             is_active=True,
             is_published=True,

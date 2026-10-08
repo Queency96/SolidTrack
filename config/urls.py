@@ -23,11 +23,9 @@ urlpatterns = [
     path("notifications/", include("notifications.urls")),
     path("vendors/", include("vendors.urls")),
     path("", include("vendors.urls.product_category")),
-    path(
-        "products/",
-        include("vendors.urls.product_public"),
-    ),
+    path("products/", include("vendors.urls.product_public")),
     path("customers/", include("customers.urls")),
-    path("locations/", include("common.urls"),),
+    path("locations/", include("common.urls")),
+    path("vendors/fulfillments/", include("vendors.urls.fulfillments")),
 
 ]

@@ -1,11 +1,13 @@
-from django.utils import timezone
-import uuid
-from django.conf import settings
-from django.db import models
-from common.models import TimeStampedModel
 from decimal import Decimal
-from riders.models import RiderProfile
+
 import uuid
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
+from django.db import models
+
+from common.models import TimeStampedModel
+
 
 class DeliveryItem(TimeStampedModel):
     """
@@ -19,6 +21,7 @@ class DeliveryItem(TimeStampedModel):
     stored as snapshots so historical deliveries remain
     accurate even if the product changes later.
     """
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -93,11 +96,13 @@ class DeliveryItem(TimeStampedModel):
     variant_name = models.CharField(
         max_length=255,
         blank=True,
+        default="",
     )
 
     sku = models.CharField(
         max_length=100,
         blank=True,
+        default="",
     )
 
     # ==================================================
@@ -106,6 +111,9 @@ class DeliveryItem(TimeStampedModel):
 
     quantity = models.PositiveIntegerField(
         default=1,
+        validators=[
+            MinValueValidator(1),
+        ],
     )
 
     # ==================================================
@@ -129,14 +137,14 @@ class DeliveryItem(TimeStampedModel):
 
     unit_weight = models.DecimalField(
         max_digits=10,
-        decimal_places=2,
+        decimal_places=3,
         null=True,
         blank=True,
     )
 
     total_weight = models.DecimalField(
         max_digits=10,
-        decimal_places=2,
+        decimal_places=3,
         null=True,
         blank=True,
     )
@@ -146,22 +154,59 @@ class DeliveryItem(TimeStampedModel):
     # ==================================================
 
     class Meta:
+
         ordering = ["created_at"]
 
         indexes = [
+
             models.Index(
                 fields=["delivery"],
             ),
+
             models.Index(
                 fields=["product"],
             ),
+
             models.Index(
                 fields=["variant"],
             ),
+
             models.Index(
                 fields=["store"],
             ),
         ]
+
+    # ==================================================
+    # Validation
+    # ==================================================
+
+    def clean(self):
+
+        if (
+            self.unit_price is not None
+            and self.unit_price < Decimal("0.00")
+        ):
+
+            raise ValidationError(
+                {
+                    "unit_price": (
+                        "Unit price cannot be negative."
+                    )
+                }
+            )
+
+        if (
+            self.unit_weight is not None
+            and self.unit_weight < Decimal("0.000")
+        ):
+
+            raise ValidationError(
+                {
+                    "unit_weight": (
+                        "Unit weight cannot be negative."
+                    )
+                }
+            )
 
     # ==================================================
     # Save
@@ -169,29 +214,43 @@ class DeliveryItem(TimeStampedModel):
 
     def save(self, *args, **kwargs):
 
+        # --------------------------------------------------
+        # Recompute totals from unit values.
+        #
+        # These fields are derived and should not be set
+        # independently by callers.
+        # --------------------------------------------------
+
         self.total_price = (
             self.unit_price
-            * self.quantity
-        )
+            * Decimal(self.quantity)
+        ).quantize(Decimal("0.01"))
 
-        if (
-            self.unit_weight is not None
-        ):
+        if self.unit_weight is not None:
+
             self.total_weight = (
                 self.unit_weight
-                * self.quantity
-            )
+                * Decimal(self.quantity)
+            ).quantize(Decimal("0.001"))
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        else:
+
+            self.total_weight = None
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
+        super().save(*args, **kwargs)
 
     # ==================================================
     # String
     # ==================================================
 
     def __str__(self):
+
         return (
             f"{self.product_name} "
             f"x {self.quantity}"

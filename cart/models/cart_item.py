@@ -1,7 +1,10 @@
 from decimal import Decimal
+
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
-import uuid
+
 
 class CartItem(models.Model):
     """
@@ -17,6 +20,7 @@ class CartItem(models.Model):
     The unit_price is a snapshot of the price at the
     time the item is added to the cart.
     """
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -98,14 +102,19 @@ class CartItem(models.Model):
         constraints = [
 
             # ------------------------------------------
-            # Product without variant
+            # Product without variant: one row per
+            # (cart, product). The `variant` field is
+            # NULL here, so including it in the field
+            # list is redundant but harmless; SQL treats
+            # NULL as distinct, and the condition
+            # restricts the constraint to NULL rows
+            # anyway.
             # ------------------------------------------
 
             models.UniqueConstraint(
                 fields=[
                     "cart",
                     "product",
-                    'variant',
                 ],
                 condition=models.Q(
                     variant__isnull=True,
@@ -116,7 +125,8 @@ class CartItem(models.Model):
             ),
 
             # ------------------------------------------
-            # Product variant
+            # Product variant: one row per
+            # (cart, variant).
             # ------------------------------------------
 
             models.UniqueConstraint(
@@ -131,7 +141,6 @@ class CartItem(models.Model):
                     "unique_variant_cart_item"
                 ),
             ),
-
         ]
 
         indexes = [
@@ -160,7 +169,6 @@ class CartItem(models.Model):
                     "product",
                 ],
             ),
-
         ]
 
     # ==================================================
@@ -169,10 +177,8 @@ class CartItem(models.Model):
 
     def __str__(self):
 
-        item_name = self.display_name
-
         return (
-            f"{item_name} "
+            f"{self.display_name} "
             f"x {self.quantity}"
         )
 
@@ -246,7 +252,7 @@ class CartItem(models.Model):
             )
 
         # ----------------------------------------------
-        # Variant ownership
+        # Variant ownership and availability
         # ----------------------------------------------
 
         if self.variant_id is not None:
@@ -266,10 +272,6 @@ class CartItem(models.Model):
                     }
                 )
 
-            # ------------------------------------------
-            # Variant availability
-            # ------------------------------------------
-
             if not self.variant.product.is_available:
 
                 raise ValidationError(
@@ -277,17 +279,6 @@ class CartItem(models.Model):
                         "product": (
                             "Product is not "
                             "available."
-                        )
-                    }
-                )
-
-            if not self.variant.is_available:
-
-                raise ValidationError(
-                    {
-                        "variant": (
-                            "The selected variant "
-                            "is not available."
                         )
                     }
                 )
@@ -302,10 +293,6 @@ class CartItem(models.Model):
                         )
                     }
                 )
-
-            # ------------------------------------------
-            # Variant inventory
-            # ------------------------------------------
 
             if (
                 self.variant.track_inventory
@@ -363,42 +350,39 @@ class CartItem(models.Model):
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+    def save(self, *args, **kwargs):
         """
         Save the cart item.
 
         Price is only populated automatically when
-        creating a new CartItem.
-
-        Existing price snapshots are preserved.
+        creating a new CartItem. Existing snapshots
+        are preserved across quantity updates.
         """
 
-        is_new = self.pk is None
+        is_new = self._state.adding
 
         # ----------------------------------------------
-        # Price snapshot
+        # Price snapshot (create only)
         # ----------------------------------------------
 
         if is_new:
 
-            self.unit_price = (
-                self.effective_price
-            )
+            self.unit_price = self.effective_price
 
         # ----------------------------------------------
         # Validation
+        #
+        # Cart items are mutable (quantity changes
+        # frequently), so we only run full validation
+        # on create. Callers performing updates should
+        # use CartService, which validates stock and
+        # availability explicitly.
         # ----------------------------------------------
 
-        self.full_clean()
+        if is_new or kwargs.pop("full_clean", False):
+            self.full_clean()
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Effective Price
@@ -434,10 +418,8 @@ class CartItem(models.Model):
 
         return (
             self.unit_price
-            * Decimal(
-                str(self.quantity),
-            )
-        )
+            * Decimal(self.quantity)
+        ).quantize(Decimal("0.01"))
 
     # ==================================================
     # Display Name

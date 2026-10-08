@@ -1,8 +1,10 @@
 from decimal import Decimal
+
+import uuid
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
-import uuid
 
 
 class Cart(models.Model):
@@ -21,6 +23,7 @@ class Cart(models.Model):
     CartItem is responsible for the individual products
     or variants inside the cart.
     """
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -80,7 +83,6 @@ class Cart(models.Model):
                     "unique_active_cart_per_customer"
                 ),
             ),
-
         ]
 
         indexes = [
@@ -98,7 +100,6 @@ class Cart(models.Model):
                     "updated_at",
                 ],
             ),
-
         ]
 
     # ==================================================
@@ -127,17 +128,6 @@ class Cart(models.Model):
     def items_count(self):
         """
         Return the number of distinct cart items.
-
-        Example:
-
-            Cart:
-                iPhone
-                T-Shirt
-                Shoes
-
-        Returns:
-
-            3
         """
 
         return self.items.count()
@@ -151,15 +141,6 @@ class Cart(models.Model):
         """
         Return the total quantity of products
         in the cart.
-
-        Example:
-
-            iPhone × 2
-            Shoes × 1
-
-        Returns:
-
-            3
         """
 
         return sum(

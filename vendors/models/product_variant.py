@@ -1,4 +1,5 @@
 from decimal import Decimal
+
 import uuid
 
 from django.core.exceptions import ValidationError
@@ -36,7 +37,9 @@ class ProductVariant(models.Model):
     # Identity
     # ==================================================
 
-    name = models.CharField(max_length=255)
+    name = models.CharField(
+        max_length=255,
+    )
 
     sku = models.CharField(
         max_length=100,
@@ -77,9 +80,13 @@ class ProductVariant(models.Model):
     # Inventory
     # ==================================================
 
-    stock_quantity = models.PositiveIntegerField(default=0)
+    stock_quantity = models.PositiveIntegerField(
+        default=0,
+    )
 
-    track_inventory = models.BooleanField(default=True)
+    track_inventory = models.BooleanField(
+        default=True,
+    )
 
     # ==================================================
     # Physical Information
@@ -97,9 +104,13 @@ class ProductVariant(models.Model):
     # Status
     # ==================================================
 
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+    )
 
-    is_default = models.BooleanField(default=False)
+    is_default = models.BooleanField(
+        default=False,
+    )
 
     is_available = models.BooleanField(
         default=True,
@@ -110,14 +121,21 @@ class ProductVariant(models.Model):
     # Ordering
     # ==================================================
 
-    sort_order = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveIntegerField(
+        default=0,
+    )
 
     # ==================================================
     # Timestamps
     # ==================================================
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     # ==================================================
     # Meta
@@ -149,9 +167,17 @@ class ProductVariant(models.Model):
 
         indexes = [
 
-            models.Index(fields=["product", "is_active"]),
-            models.Index(fields=["product", "sort_order"]),
-            models.Index(fields=["product", "is_available"]),
+            models.Index(
+                fields=["product", "is_active"],
+            ),
+
+            models.Index(
+                fields=["product", "sort_order"],
+            ),
+
+            models.Index(
+                fields=["product", "is_available"],
+            ),
         ]
 
     # ==================================================
@@ -206,18 +232,38 @@ class ProductVariant(models.Model):
     def clean(self):
 
         if self.product_id is None:
+
             raise ValidationError(
-                {"product": "A product variant must belong to a product."}
+                {
+                    "product": (
+                        "A product variant must belong "
+                        "to a product."
+                    )
+                }
             )
 
         if not self.name.strip():
+
             raise ValidationError(
-                {"name": "Variant name cannot be empty."}
+                {
+                    "name": (
+                        "Variant name cannot be empty."
+                    )
+                }
             )
 
-        if self.price is not None and self.price < Decimal("0.00"):
+        if (
+            self.price is not None
+            and self.price < Decimal("0.00")
+        ):
+
             raise ValidationError(
-                {"price": "Variant price cannot be negative."}
+                {
+                    "price": (
+                        "Variant price cannot be "
+                        "negative."
+                    )
+                }
             )
 
         if (
@@ -225,18 +271,27 @@ class ProductVariant(models.Model):
             and self.price is not None
             and self.compare_at_price < self.price
         ):
+
             raise ValidationError(
                 {
                     "compare_at_price": (
-                        "Compare-at price cannot be lower "
-                        "than the variant price."
+                        "Compare-at price cannot be "
+                        "lower than the variant price."
                     )
                 }
             )
 
-        if self.weight is not None and self.weight < Decimal("0.000"):
+        if (
+            self.weight is not None
+            and self.weight < Decimal("0.000")
+        ):
+
             raise ValidationError(
-                {"weight": "Weight cannot be negative."}
+                {
+                    "weight": (
+                        "Weight cannot be negative."
+                    )
+                }
             )
 
     # ==================================================
@@ -244,7 +299,13 @@ class ProductVariant(models.Model):
     # ==================================================
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
         super().save(*args, **kwargs)
 
     # ==================================================
@@ -253,14 +314,21 @@ class ProductVariant(models.Model):
 
     @property
     def effective_price(self):
+
         if self.price is not None:
             return self.price
+
         return self.product.price
 
     @property
     def effective_compare_at_price(self):
-        if self.compare_at_price is not None:
+
+        if self.compare_at_price is not None and (
+            self.price is None
+            or self.compare_at_price >= self.price
+        ):
             return self.compare_at_price
+
         return self.product.compare_at_price
 
     # ==================================================
@@ -269,8 +337,10 @@ class ProductVariant(models.Model):
 
     @property
     def is_in_stock(self):
+
         if not self.track_inventory:
             return True
+
         return self.stock_quantity > 0
 
     # ==================================================
@@ -335,7 +405,10 @@ class ProductVariant(models.Model):
             )
         )
 
-        return [link.option_value for link in links]
+        return [
+            link.option_value
+            for link in links
+        ]
 
     # ==================================================
     # Active Option Values
@@ -362,7 +435,8 @@ class ProductVariant(models.Model):
 
     @property
     def option_value_count(self):
-        return len(list(self._option_links()))
+
+        return len(self._option_links())
 
     # ==================================================
     # Option Count
@@ -388,6 +462,7 @@ class ProductVariant(models.Model):
 
     @property
     def has_options(self):
+
         return bool(self._option_links())
 
     # ==================================================
@@ -420,7 +495,9 @@ class ProductVariant(models.Model):
             return False
 
         option_value_id = getattr(
-            option_value, "id", option_value,
+            option_value,
+            "id",
+            option_value,
         )
 
         return any(
@@ -440,6 +517,7 @@ class ProductVariant(models.Model):
         option_id = getattr(option, "id", option)
 
         for link in self._option_links():
+
             if link.option_value.option_id == option_id:
                 return link.option_value
 
@@ -464,6 +542,7 @@ class ProductVariant(models.Model):
 
     @property
     def pickup_store(self):
+
         return self.product.store
 
     # ==================================================
@@ -472,4 +551,5 @@ class ProductVariant(models.Model):
 
     @property
     def pickup_location(self):
+
         return self.product.pickup_location

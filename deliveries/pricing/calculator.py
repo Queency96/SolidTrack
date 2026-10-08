@@ -10,6 +10,25 @@ from .service_fee import ServiceFeeStrategy
 
 
 class PricingCalculator:
+    """
+    Combine all pricing strategies into one breakdown.
+
+    Vehicle multiplier semantics
+    ----------------------------
+    The vehicle multiplier scales each per-vehicle cost
+    component (base, distance, package) *before* those
+    components are summed. This makes the calculator's
+    per-component outputs directly usable as the
+    corresponding Delivery fields:
+
+        base_price     -> base_price
+        distance_price -> distance_price
+        package_fee    -> weight_price
+
+    so that Delivery.total_price, which is reconstructed
+    as the sum of those fields, matches the calculator's
+    total exactly.
+    """
 
     def __init__(self):
 
@@ -20,6 +39,10 @@ class PricingCalculator:
         self.surge = SurgePricingStrategy()
         self.discount = DiscountPricingStrategy()
         self.service_fee = ServiceFeeStrategy()
+
+    # ==================================================
+    # Calculate
+    # ==================================================
 
     def calculate(
         self,
@@ -38,8 +61,6 @@ class PricingCalculator:
 
         The calculator does not determine the route.
         Distance must already be supplied by the caller.
-
-        Returns a complete pricing breakdown.
         """
 
         distance = Decimal(str(distance))
@@ -56,136 +77,136 @@ class PricingCalculator:
             )
 
         # ==================================================
-        # Base
+        # Vehicle multiplier
         # ==================================================
 
-        base_price = Decimal(
-            str(config.base_price)
+        multiplier = self._resolve_vehicle_multiplier(
+            config=config,
+            vehicle_type=vehicle_type,
         )
 
         # ==================================================
-        # Distance
+        # Per-vehicle components (scaled by multiplier)
         # ==================================================
 
-        distance_price = self.distance.calculate(
-            config,
-            distance,
+        base_price = self._quantize(
+            Decimal(str(config.base_price)) * multiplier
         )
 
-        distance_price = Decimal(
-            str(distance_price)
+        distance_price = self._quantize(
+            Decimal(
+                str(
+                    self.distance.calculate(
+                        config,
+                        distance,
+                    )
+                )
+            )
+            * multiplier
+        )
+
+        package_fee = self._quantize(
+            Decimal(
+                str(
+                    self.package.calculate(
+                        config,
+                        package_size,
+                    )
+                )
+            )
+            * multiplier
+        )
+
+        self._reject_negative(
+            base_price=base_price,
+            distance_price=distance_price,
+            package_fee=package_fee,
         )
 
         # ==================================================
-        # Package
+        # Subtotal
         # ==================================================
 
-        package_fee = self.package.calculate(
-            config,
-            package_size,
-        )
-
-        package_fee = Decimal(
-            str(package_fee)
-        )
-
-        # ==================================================
-        # Vehicle
-        # ==================================================
-
-        multiplier = self.vehicle.calculate(
-            config,
-            vehicle_type,
-        )
-
-        multiplier = Decimal(
-            str(multiplier)
-        )
-
-        # ==================================================
-        # Delivery Subtotal
-        # ==================================================
-
-        subtotal = (
+        subtotal = self._quantize(
             base_price
             + distance_price
             + package_fee
-        )
-
-        subtotal *= multiplier
-
-        subtotal = subtotal.quantize(
-            Decimal("0.01")
         )
 
         # ==================================================
         # Surge
         # ==================================================
 
-        surge = self.surge.calculate(
-            config,
-            subtotal,
+        surge = self._quantize(
+            Decimal(
+                str(
+                    self.surge.calculate(
+                        config,
+                        subtotal,
+                    )
+                )
+            )
         )
 
-        surge = Decimal(
-            str(surge)
-        ).quantize(
-            Decimal("0.01")
-        )
+        if surge < Decimal("0.00"):
+            surge = Decimal("0.00")
 
         # ==================================================
         # Insurance
         # ==================================================
 
-        insurance_fee = self.insurance.calculate(
-            config,
-            insurance,
-            declared_value,
+        insurance_fee = self._quantize(
+            Decimal(
+                str(
+                    self.insurance.calculate(
+                        config,
+                        insurance,
+                        declared_value,
+                    )
+                )
+            )
         )
 
-        insurance_fee = Decimal(
-            str(insurance_fee)
-        ).quantize(
-            Decimal("0.01")
-        )
+        if insurance_fee < Decimal("0.00"):
+            insurance_fee = Decimal("0.00")
 
         # ==================================================
         # Service Fee
         # ==================================================
 
-        service_fee = self.service_fee.calculate(
-            config,
+        service_fee = self._quantize(
+            Decimal(
+                str(
+                    self.service_fee.calculate(
+                        config,
+                    )
+                )
+            )
         )
 
-        service_fee = Decimal(
-            str(service_fee)
-        ).quantize(
-            Decimal("0.01")
-        )
+        if service_fee < Decimal("0.00"):
+            service_fee = Decimal("0.00")
 
         # ==================================================
         # Discount
         # ==================================================
 
-        discount = self.discount.calculate(
-            customer,
-            subtotal,
-            coupon,
-        )
-
-        discount = Decimal(
-            str(discount)
-        ).quantize(
-            Decimal("0.01")
+        discount = self._quantize(
+            Decimal(
+                str(
+                    self.discount.calculate(
+                        customer,
+                        subtotal,
+                        coupon,
+                    )
+                )
+            )
         )
 
         if discount < Decimal("0.00"):
             discount = Decimal("0.00")
 
-        # Never allow discount to exceed subtotal
-        # unless your discount strategy explicitly
-        # supports discounting additional charges.
-
+        # Discount never exceeds the subtotal.
         if discount > subtotal:
             discount = subtotal
 
@@ -194,7 +215,9 @@ class PricingCalculator:
         # ==================================================
 
         total = (
-            subtotal
+            base_price
+            + distance_price
+            + package_fee
             + surge
             + insurance_fee
             + service_fee
@@ -204,38 +227,64 @@ class PricingCalculator:
         if total < Decimal("0.00"):
             total = Decimal("0.00")
 
-        total = total.quantize(
-            Decimal("0.01")
-        )
+        total = self._quantize(total)
 
         # ==================================================
         # Result
         # ==================================================
 
         return {
-            "base_price": base_price.quantize(
-                Decimal("0.01")
-            ),
-
-            "distance_price": distance_price.quantize(
-                Decimal("0.01")
-            ),
-
-            "package_fee": package_fee.quantize(
-                Decimal("0.01")
-            ),
-
+            "base_price": base_price,
+            "distance_price": distance_price,
+            "package_fee": package_fee,
             "vehicle_multiplier": multiplier,
-
             "subtotal": subtotal,
-
             "surge_fee": surge,
-
             "insurance_fee": insurance_fee,
-
             "service_fee": service_fee,
-
             "discount": discount,
-
             "total": total,
         }
+
+    # ==================================================
+    # Helpers
+    # ==================================================
+
+    @staticmethod
+    def _quantize(value):
+        return Decimal(value).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _reject_negative(**components):
+
+        for name, value in components.items():
+            if value < Decimal("0.00"):
+                raise ValueError(
+                    f"{name} cannot be negative."
+                )
+
+    @staticmethod
+    def _resolve_vehicle_multiplier(
+        *,
+        config,
+        vehicle_type,
+    ):
+        if vehicle_type is None:
+            # Default to the cheapest supported class.
+            return Decimal("1")
+
+        multiplier = Decimal(
+            str(
+                VehiclePricingStrategy().calculate(
+                    config,
+                    vehicle_type,
+                )
+            )
+        )
+
+        if multiplier <= Decimal("0"):
+            raise ValueError(
+                "Vehicle multiplier must be positive."
+            )
+
+        return multiplier

@@ -407,8 +407,14 @@ class DeliveryAssignment(TimeStampedModel):
     # ============================================================
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-        return super().save(*args, **kwargs)
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
+        super().save(*args, **kwargs)
 
     # ============================================================
     # PROPERTIES

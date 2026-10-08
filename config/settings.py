@@ -236,3 +236,21 @@ IPWARE_META_PRECEDENCE_ORDER = (
     "HTTP_X_FORWARDED_FOR",
     "REMOTE_ADDR",
 )
+
+
+# Paystack webhook IP addresses (for signature verification)
+PAYSTACK_WEBHOOK_IPS = [
+    "52.31.139.75",
+    "52.49.173.169",
+    "52.214.14.220",
+]
+
+
+
+
+PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY")
+PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY")
+PAYSTACK_CALLBACK_URL = config(
+    "PAYSTACK_CALLBACK_URL",
+    default="https://yourapp.com/payments/callback/",
+)

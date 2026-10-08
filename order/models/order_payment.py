@@ -1,6 +1,10 @@
 import uuid
+
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 
@@ -8,8 +12,8 @@ class OrderPayment(models.Model):
     """
     Payment transaction associated with an order.
 
-    One order may have multiple payment attempts, but only a
-    successful payment should settle the order.
+    One order may have multiple payment attempts, but only
+    a successful payment should settle the order.
     """
 
     class PaymentMethod(models.TextChoices):
@@ -69,11 +73,15 @@ class OrderPayment(models.Model):
         max_length=30,
         choices=PaymentStatus.choices,
         default=PaymentStatus.PENDING,
+        db_index=True,
     )
 
     amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
+        validators=[
+            MinValueValidator(Decimal("0.01")),
+        ],
     )
 
     currency = models.CharField(
@@ -101,6 +109,7 @@ class OrderPayment(models.Model):
 
     failure_reason = models.TextField(
         blank=True,
+        default="",
     )
 
     paid_at = models.DateTimeField(
@@ -122,6 +131,7 @@ class OrderPayment(models.Model):
     )
 
     class Meta:
+
         db_table = "order_payments"
 
         indexes = [
@@ -148,6 +158,7 @@ class OrderPayment(models.Model):
         ]
 
     def __str__(self):
+
         return (
             f"{self.reference} - "
             f"{self.amount} {self.currency} - "
@@ -155,20 +166,23 @@ class OrderPayment(models.Model):
         )
 
     def clean(self):
-        if self.amount <= 0:
-            raise ValidationError(
-                {"amount": "Payment amount must be greater than zero."}
-            )
 
         if len(self.currency) != 3:
+
             raise ValidationError(
-                {"currency": "Currency must be a 3-letter ISO code."}
+                {
+                    "currency": (
+                        "Currency must be a 3-letter "
+                        "ISO code."
+                    )
+                }
             )
 
         if (
             self.status == self.PaymentStatus.SUCCESSFUL
             and not self.paid_at
         ):
+
             raise ValidationError(
                 {
                     "paid_at": (
@@ -185,6 +199,7 @@ class OrderPayment(models.Model):
             }
             and not self.refunded_at
         ):
+
             raise ValidationError(
                 {
                     "refunded_at": (
@@ -193,3 +208,13 @@ class OrderPayment(models.Model):
                     )
                 }
             )
+
+    def save(self, *args, **kwargs):
+
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
+
+        super().save(*args, **kwargs)

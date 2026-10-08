@@ -1,7 +1,8 @@
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.text import slugify
-import uuid
 
 
 class ProductOption(models.Model):
@@ -31,20 +32,12 @@ class ProductOption(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    
-    # ==================================================
-    # Product
-    # ==================================================
 
     product = models.ForeignKey(
         "vendors.Product",
         on_delete=models.CASCADE,
         related_name="options",
     )
-
-    # ==================================================
-    # Identity
-    # ==================================================
 
     name = models.CharField(
         max_length=100,
@@ -54,25 +47,13 @@ class ProductOption(models.Model):
         max_length=120,
     )
 
-    # ==================================================
-    # Display
-    # ==================================================
-
     sort_order = models.PositiveIntegerField(
         default=0,
     )
 
-    # ==================================================
-    # Status
-    # ==================================================
-
     is_active = models.BooleanField(
         default=True,
     )
-
-    # ==================================================
-    # Timestamps
-    # ==================================================
 
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -82,10 +63,6 @@ class ProductOption(models.Model):
         auto_now=True,
     )
 
-    # ==================================================
-    # Meta
-    # ==================================================
-
     class Meta:
 
         ordering = [
@@ -94,117 +71,62 @@ class ProductOption(models.Model):
         ]
 
         constraints = [
-
             models.UniqueConstraint(
-                fields=[
-                    "product",
-                    "name",
-                ],
-                name=(
-                    "unique_product_option_name"
-                ),
+                fields=["product", "name"],
+                name="unique_product_option_name",
             ),
-
             models.UniqueConstraint(
-                fields=[
-                    "product",
-                    "slug",
-                ],
-                name=(
-                    "unique_product_option_slug"
-                ),
+                fields=["product", "slug"],
+                name="unique_product_option_slug",
             ),
-
         ]
 
         indexes = [
-
             models.Index(
-                fields=[
-                    "product",
-                    "is_active",
-                ],
+                fields=["product", "is_active"],
             ),
-
             models.Index(
-                fields=[
-                    "product",
-                    "sort_order",
-                ],
+                fields=["product", "sort_order"],
             ),
-
         ]
-
-    # ==================================================
-    # String Representation
-    # ==================================================
 
     def __str__(self):
 
-        return (
-            f"{self.product.name} - "
-            f"{self.name}"
-        )
-
-    # ==================================================
-    # Validation
-    # ==================================================
+        return f"{self.product.name} - {self.name}"
 
     def clean(self):
-        """
-        Validate product option configuration.
-        """
 
         if self.product_id is None:
 
             raise ValidationError(
                 {
                     "product": (
-                        "A product option must "
-                        "belong to a product."
+                        "A product option must belong "
+                        "to a product."
                     )
                 }
             )
 
-        # ----------------------------------------------
-        # Name
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Normalize before validating, so `"   "` does not
+        # slip through the empty-name check.
+        # --------------------------------------------------
 
-        if not self.name or not self.name.strip():
+        if self.name:
+            self.name = self.name.strip()
+
+        if not self.name:
 
             raise ValidationError(
                 {
                     "name": (
-                        "Option name cannot "
-                        "be empty."
+                        "Option name cannot be empty."
                     )
                 }
             )
 
-        # ----------------------------------------------
-        # Slug
-        # ----------------------------------------------
-
-        if not self.slug or not self.slug.strip():
-
-            raise ValidationError(
-                {
-                    "slug": (
-                        "Option slug cannot "
-                        "be empty."
-                    )
-                }
-            )
-
-        # ----------------------------------------------
-        # Normalize comparison
-        # ----------------------------------------------
-
-        self.name = self.name.strip()
-
-        self.slug = slugify(
-            self.slug,
-        )
+        if self.slug:
+            self.slug = slugify(self.slug)
 
         if not self.slug:
 
@@ -217,110 +139,54 @@ class ProductOption(models.Model):
                 }
             )
 
-    # ==================================================
-    # Save
-    # ==================================================
+    def save(self, *args, **kwargs):
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        self.full_clean()
-
-        super().save(
-            *args,
-            **kwargs,
-        )
-
-    # ==================================================
-    # Values
-    # ==================================================
+        super().save(*args, **kwargs)
 
     @property
     def value_count(self):
-        """
-        Return the total number of values defined
-        for this option.
-        """
 
         return self.values.count()
 
-    # ==================================================
-    # Active Values
-    # ==================================================
-
     @property
     def active_value_count(self):
-        """
-        Return the number of active option values.
-        """
 
         return self.values.filter(
             is_active=True,
         ).count()
 
-    # ==================================================
-    # Has Values
-    # ==================================================
-
     @property
     def has_values(self):
-        """
-        Determine whether this option has values.
-        """
 
         return self.values.exists()
 
-    # ==================================================
-    # Has Active Values
-    # ==================================================
-
     @property
     def has_active_values(self):
-        """
-        Determine whether this option has at least
-        one active value.
-        """
 
         return self.values.filter(
             is_active=True,
         ).exists()
 
-    # ==================================================
-    # Active Values
-    # ==================================================
-
     @property
     def active_values(self):
-        """
-        Return active option values.
-        """
 
         return self.values.filter(
             is_active=True,
         )
 
-    # ==================================================
-    # Variant Count
-    # ==================================================
-
     @property
     def variant_count(self):
-        """
-        Return the number of variants using values
-        belonging to this option.
-        """
 
         return (
             self.values
-            .filter(
-                variant_values__isnull=False,
-            )
-            .values(
-                "variant_values__variant",
-            )
+            .filter(variant_values__isnull=False)
+            .values("variant_values__variant")
             .distinct()
             .count()
         )

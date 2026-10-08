@@ -1,9 +1,10 @@
 from decimal import Decimal
+
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
-import uuid
 
 
 class Order(models.Model):
@@ -187,6 +188,39 @@ class Order(models.Model):
     )
 
     # ==================================================
+    # Delivery OTP
+    # ==================================================
+    #
+    # Generated when the first delivery is dispatched.
+    # The customer shares this with the rider to confirm
+    # physical handover. On successful verification, the
+    # order transitions to DELIVERED and escrow is released.
+    # ==================================================
+
+    delivery_otp = models.CharField(
+        max_length=6,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+
+    delivery_otp_generated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    delivery_otp_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    delivery_otp_attempts = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Failed verification attempts. Locks after 5.",
+    )
+
+
+    # ==================================================
     # Pricing
     # ==================================================
 
@@ -321,7 +355,6 @@ class Order(models.Model):
                     "status",
                 ],
             ),
-
         ]
 
     # ==================================================
@@ -390,10 +423,7 @@ class Order(models.Model):
         )
 
         if calculated_total < Decimal("0.00"):
-
-            calculated_total = Decimal(
-                "0.00"
-            )
+            calculated_total = Decimal("0.00")
 
         if self.total_amount != calculated_total:
 
@@ -406,22 +436,66 @@ class Order(models.Model):
                 }
             )
 
+        # ----------------------------------------------
+        # Status timestamp requirements
+        # ----------------------------------------------
+
+        if (
+            self.payment_status
+            == self.PaymentStatus.PAID
+            and self.paid_at is None
+        ):
+
+            raise ValidationError(
+                {
+                    "paid_at": (
+                        "Paid orders require a paid "
+                        "timestamp."
+                    )
+                }
+            )
+
+        if (
+            self.status == self.Status.CANCELLED
+            and self.cancelled_at is None
+        ):
+
+            raise ValidationError(
+                {
+                    "cancelled_at": (
+                        "Cancelled orders require a "
+                        "cancelled timestamp."
+                    )
+                }
+            )
+
+        if (
+            self.status == self.Status.DELIVERED
+            and self.delivered_at is None
+        ):
+
+            raise ValidationError(
+                {
+                    "delivered_at": (
+                        "Delivered orders require a "
+                        "delivered timestamp."
+                    )
+                }
+            )
+
     # ==================================================
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+    def save(self, *args, **kwargs):
 
-        self.full_clean()
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Item Count
@@ -499,6 +573,22 @@ class Order(models.Model):
         )
 
     # ==================================================
+    # Refunded
+    # ==================================================
+
+    @property
+    def is_refunded(self):
+        """
+        Determine whether the order has been refunded
+        (fully or partially).
+        """
+
+        return self.payment_status in (
+            self.PaymentStatus.REFUNDED,
+            self.PaymentStatus.PARTIALLY_REFUNDED,
+        )
+
+    # ==================================================
     # Can Cancel
     # ==================================================
 
@@ -509,8 +599,11 @@ class Order(models.Model):
         cancelled.
         """
 
-        return self.status in [
-            self.Status.PENDING,
-            self.Status.CONFIRMED,
-            self.Status.PROCESSING,
-        ]
+        return (
+            self.status in [
+                self.Status.PENDING,
+                self.Status.CONFIRMED,
+                self.Status.PROCESSING,
+            ]
+            and not self.is_refunded
+        )

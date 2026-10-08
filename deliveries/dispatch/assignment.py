@@ -1226,8 +1226,9 @@ class AssignmentService:
         rider_role = getattr(rider, "role", None)
 
         if rider_role is not None:
-            rider_role_str = str(rider_role).upper()
-            if rider_role_str != "RIDER":
+            # Support both raw strings and TextChoices/Enum values.
+            role_value = getattr(rider_role, "value", rider_role)
+            if str(role_value).upper() != "RIDER":
                 raise InvalidAssignmentState("User is not a rider.")
 
         # ========================================================

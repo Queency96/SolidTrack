@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from .base import PricingStrategy
 
 
@@ -8,4 +10,8 @@ class ServiceFeeStrategy(PricingStrategy):
         config,
     ):
 
-        return config.service_fee
+        return Decimal(
+            str(config.service_fee)
+        ).quantize(
+            Decimal("0.01")
+        )

@@ -1,7 +1,9 @@
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
+
 from cloudinary.models import CloudinaryField
-import uuid
 
 
 class ProductImage(models.Model):
@@ -28,10 +30,6 @@ class ProductImage(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    
-    # ==================================================
-    # Product
-    # ==================================================
 
     product = models.ForeignKey(
         "vendors.Product",
@@ -39,52 +37,29 @@ class ProductImage(models.Model):
         related_name="images",
     )
 
-    # ==================================================
-    # Image
-    # ==================================================
-
     image = CloudinaryField(
         "image",
         blank=True,
         null=True,
     )
 
-    # ==================================================
-    # Image Information
-    # ==================================================
-
     alt_text = models.CharField(
         max_length=255,
         blank=True,
+        default="",
     )
-
-    # ==================================================
-    # Primary Image
-    # ==================================================
 
     is_primary = models.BooleanField(
         default=False,
     )
 
-    # ==================================================
-    # Ordering
-    # ==================================================
-
     display_order = models.PositiveIntegerField(
         default=0,
     )
 
-    # ==================================================
-    # Status
-    # ==================================================
-
     is_active = models.BooleanField(
         default=True,
     )
-
-    # ==================================================
-    # Timestamps
-    # ==================================================
 
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -94,10 +69,6 @@ class ProductImage(models.Model):
         auto_now=True,
     )
 
-    # ==================================================
-    # Meta
-    # ==================================================
-
     class Meta:
 
         ordering = [
@@ -106,42 +77,21 @@ class ProductImage(models.Model):
         ]
 
         indexes = [
-
             models.Index(
-                fields=[
-                    "product",
-                    "is_active",
-                ],
+                fields=["product", "is_active"],
             ),
-
             models.Index(
-                fields=[
-                    "product",
-                    "is_primary",
-                ],
+                fields=["product", "is_primary"],
             ),
-
         ]
 
         constraints = [
-
             models.UniqueConstraint(
-                fields=[
-                    "product",
-                ],
-                condition=models.Q(
-                    is_primary=True,
-                ),
-                name=(
-                    "unique_primary_image_per_product"
-                ),
+                fields=["product"],
+                condition=models.Q(is_primary=True),
+                name="unique_primary_image_per_product",
             ),
-
         ]
-
-    # ==================================================
-    # String Representation
-    # ==================================================
 
     def __str__(self):
 
@@ -150,16 +100,10 @@ class ProductImage(models.Model):
             f"Image {self.pk}"
         )
 
-    # ==================================================
-    # Validation
-    # ==================================================
-
     def clean(self):
-        """
-        Validate product image ownership and state.
-        """
 
         if self.product_id is None:
+
             raise ValidationError(
                 {
                     "product": (
@@ -169,26 +113,16 @@ class ProductImage(models.Model):
                 }
             )
 
-    # ==================================================
-    # Save
-    # ==================================================
+    def save(self, *args, **kwargs):
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        self.full_clean()
+        super().save(*args, **kwargs)
 
-        super().save(
-            *args,
-            **kwargs,
-        )
-
-    # ==================================================
-    # Primary Image Helper
-    # ==================================================
     @transaction.atomic
     def make_primary(self):
         """
@@ -204,21 +138,18 @@ class ProductImage(models.Model):
                 product_id=self.product_id,
                 is_primary=True,
             )
-            .exclude(
-                pk=self.pk,
-            )
-            .update(
-                is_primary=False,
-            )
+            .exclude(pk=self.pk)
+            .update(is_primary=False)
         )
 
         if not self.is_primary:
+
             self.is_primary = True
             self.save(
                 update_fields=[
                     "is_primary",
                     "updated_at",
-                ]
+                ],
             )
 
         return self

@@ -3,7 +3,6 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from order.models.package import Package
 from ..models import (
     Delivery,
     DeliveryAddress,
@@ -24,22 +23,18 @@ class DeliveryService:
 
         base_price              -> base_price
         distance_price          -> distance_price
-        package_fee * vehicle_multiplier
-                                -> weight_price
+        package_fee             -> weight_price
         surge_fee               -> surge_price
         insurance_fee           -> insurance_fee
         service_fee             -> service_fee
         discount                -> discount
 
-    Delivery.total_price is then recomputed from the sum of
-    the mapped components so that Delivery.clean()'s
+    The vehicle multiplier is applied per-component inside
+    the pricing calculator, so `base_price`, `distance_price`,
+    and `package_fee` are already scaled when they reach this
+    service. Delivery.total_price is reconstructed from the
+    sum of the mapped fields so that Delivery.clean()'s
     total-price invariant holds.
-
-    Delivery has no separate `package_fee` or
-    `vehicle_multiplier` column. The calculator's
-    `package_fee * vehicle_multiplier` is folded into
-    weight_price, which is the pricing slot not otherwise
-    used by the calculator.
     """
 
     # ==================================================
@@ -67,7 +62,9 @@ class DeliveryService:
         """
 
         if fulfillment is None:
-            raise ValueError("An order fulfillment is required.")
+            raise ValueError(
+                "An order fulfillment is required."
+            )
 
         # --------------------------------------------------
         # Lock fulfillment
@@ -76,7 +73,12 @@ class DeliveryService:
         fulfillment = (
             fulfillment.__class__.objects
             .select_for_update()
-            .select_related("order", "store", "store__vendor")
+            .select_related(
+                "order",
+                "order__customer",
+                "store",
+                "store__vendor",
+            )
             .get(pk=fulfillment.pk)
         )
 
@@ -84,11 +86,14 @@ class DeliveryService:
         # Validate fulfillment state
         # --------------------------------------------------
 
-        if fulfillment.status in [
+        terminal_statuses = {
             fulfillment.Status.CANCELLED,
             fulfillment.Status.FAILED,
             fulfillment.Status.DELIVERED,
-        ]:
+        }
+
+        if fulfillment.status in terminal_statuses:
+
             raise ValueError(
                 "A delivery cannot be created for a "
                 f"{fulfillment.status} fulfillment."
@@ -99,21 +104,49 @@ class DeliveryService:
         # --------------------------------------------------
 
         if hasattr(fulfillment, "delivery"):
-            raise ValueError("This fulfillment already has a delivery.")
+
+            raise ValueError(
+                "This fulfillment already has a delivery."
+            )
 
         # --------------------------------------------------
-        # Extract delivery data
+        # Copy validated_data so we do not mutate the
+        # caller's dict.
         # --------------------------------------------------
 
         data = dict(validated_data)
 
-        destination_data = data.pop("destination", None)
-        if destination_data is None:
-            raise ValueError("Destination address is required.")
+        destination_data = data.pop(
+            "destination",
+            None,
+        )
+
+        if not destination_data:
+
+            raise ValueError(
+                "Destination address is required."
+            )
 
         package_size = data.get("package_size")
-        if package_size is None:
-            raise ValueError("Package size is required.")
+
+        if not package_size:
+
+            raise ValueError(
+                "Package size is required."
+            )
+
+        insurance = bool(
+            data.pop("insurance", False)
+        )
+
+        declared_value = Decimal(
+            str(
+                data.pop(
+                    "declared_value",
+                    Decimal("0.00"),
+                )
+            )
+        )
 
         # --------------------------------------------------
         # Store / vendor / customer
@@ -127,20 +160,24 @@ class DeliveryService:
         # Store snapshot
         # --------------------------------------------------
 
-        store_snapshot = DeliveryService._get_store_snapshot(
-            fulfillment=fulfillment,
+        store_snapshot = (
+            DeliveryService._get_store_snapshot(
+                fulfillment=fulfillment,
+            )
         )
 
         # --------------------------------------------------
         # Package summary
         # --------------------------------------------------
 
-        package_summary = DeliveryService._get_package_summary(
-            fulfillment=fulfillment,
+        package_summary = (
+            DeliveryService._get_package_summary(
+                fulfillment=fulfillment,
+            )
         )
 
         # --------------------------------------------------
-        # Delivery
+        # Create Delivery
         # --------------------------------------------------
 
         delivery = Delivery.objects.create(
@@ -159,9 +196,16 @@ class DeliveryService:
         # Pickup address
         # --------------------------------------------------
 
-        pickup_data = DeliveryService._build_pickup_address(
-            fulfillment=fulfillment,
-            store_snapshot=store_snapshot,
+        pickup_data = (
+            DeliveryService._build_pickup_address(
+                fulfillment=fulfillment,
+                store_snapshot=store_snapshot,
+            )
+        )
+
+        DeliveryService._require_address_contacts(
+            address=pickup_data,
+            label="pickup",
         )
 
         DeliveryAddress.objects.create(
@@ -174,9 +218,16 @@ class DeliveryService:
         # Destination address
         # --------------------------------------------------
 
+        DeliveryService._require_address_contacts(
+            address=destination_data,
+            label="destination",
+        )
+
         DeliveryAddress.objects.create(
             delivery=delivery,
-            address_type=DeliveryAddress.AddressType.DELIVERY,
+            address_type=(
+                DeliveryAddress.AddressType.DELIVERY
+            ),
             **destination_data,
         )
 
@@ -184,18 +235,28 @@ class DeliveryService:
         # Route
         # --------------------------------------------------
 
-        route = PricingService._get_route(
+        route = PricingService.get_route(
             {
-                "pickup_latitude": pickup_data["latitude"],
-                "pickup_longitude": pickup_data["longitude"],
-                "destination_latitude": destination_data["latitude"],
-                "destination_longitude": destination_data["longitude"],
+                "pickup_latitude": (
+                    pickup_data["latitude"]
+                ),
+                "pickup_longitude": (
+                    pickup_data["longitude"]
+                ),
+                "destination_latitude": (
+                    destination_data["latitude"]
+                ),
+                "destination_longitude": (
+                    destination_data["longitude"]
+                ),
             }
         )
 
         delivery.distance_km = route["distance"]
         delivery.estimated_duration_minutes = int(
-            route["duration"].quantize(Decimal("1"))
+            Decimal(route["duration"]).quantize(
+                Decimal("1"),
+            )
         )
 
         # --------------------------------------------------
@@ -205,12 +266,16 @@ class DeliveryService:
         pricing_data = {
             "pickup_latitude": pickup_data["latitude"],
             "pickup_longitude": pickup_data["longitude"],
-            "destination_latitude": destination_data["latitude"],
-            "destination_longitude": destination_data["longitude"],
+            "destination_latitude": (
+                destination_data["latitude"]
+            ),
+            "destination_longitude": (
+                destination_data["longitude"]
+            ),
             "package_size": package_size,
             "vehicle_type": delivery.vehicle_type,
-            "insurance": data.get("insurance", False),
-            "declared_value": data.get("declared_value", Decimal("0.00")),
+            "insurance": insurance,
+            "declared_value": declared_value,
         }
 
         pricing = PricingService.estimate(
@@ -237,13 +302,19 @@ class DeliveryService:
         # Update fulfillment
         # --------------------------------------------------
 
-        if fulfillment.status in [
+        if fulfillment.status in {
             fulfillment.Status.PENDING,
             fulfillment.Status.PROCESSING,
             fulfillment.Status.PACKING,
-        ]:
-            fulfillment.status = fulfillment.Status.READY_FOR_DISPATCH
-            fulfillment.ready_for_dispatch_at = timezone.now()
+        }:
+
+            fulfillment.status = (
+                fulfillment.Status.READY_FOR_DISPATCH
+            )
+            fulfillment.ready_for_dispatch_at = (
+                timezone.now()
+            )
+
             fulfillment.save(
                 update_fields=[
                     "status",
@@ -266,36 +337,67 @@ class DeliveryService:
 
     @staticmethod
     def _get_store_snapshot(fulfillment):
+
         store = fulfillment.store
 
+        def pick(snapshot_field, store_field, default=""):
+
+            value = getattr(
+                fulfillment,
+                snapshot_field,
+                None,
+            )
+
+            if value:
+                return value
+
+            return getattr(store, store_field, default)
+
         return {
-            "name": (
-                getattr(fulfillment, "store_name", None)
-                or getattr(store, "name", "")
+            "name": pick(
+                "store_name",
+                "name",
             ),
-            "address_line_1": (
-                getattr(fulfillment, "store_address_line_1", None)
-                or getattr(store, "address_line_1", "")
+            "contact_name": (
+                getattr(
+                    fulfillment,
+                    "store_contact_name",
+                    "",
+                )
+                or pick("store_name", "name")
             ),
-            "address_line_2": (
-                getattr(fulfillment, "store_address_line_2", None)
-                or getattr(store, "address_line_2", "")
+            "contact_phone": (
+                getattr(
+                    fulfillment,
+                    "store_contact_phone",
+                    "",
+                )
+                or getattr(store, "phone", "")
             ),
-            "city": (
-                getattr(fulfillment, "store_city", None)
-                or getattr(store, "city", "")
+            "address_line_1": pick(
+                "store_address_line_1",
+                "address_line_1",
             ),
-            "state": (
-                getattr(fulfillment, "store_state", None)
-                or getattr(store, "state", "")
+            "address_line_2": pick(
+                "store_address_line_2",
+                "address_line_2",
             ),
-            "country": (
-                getattr(fulfillment, "store_country", None)
-                or getattr(store, "country", "Nigeria")
+            "city": pick(
+                "store_city",
+                "city",
             ),
-            "postal_code": (
-                getattr(fulfillment, "store_postal_code", None)
-                or getattr(store, "postal_code", "")
+            "state": pick(
+                "store_state",
+                "state",
+            ),
+            "country": pick(
+                "store_country",
+                "country",
+                "Nigeria",
+            ),
+            "postal_code": pick(
+                "store_postal_code",
+                "postal_code",
             ),
             "latitude": fulfillment.store_latitude,
             "longitude": fulfillment.store_longitude,
@@ -306,10 +408,20 @@ class DeliveryService:
     # ==================================================
 
     @staticmethod
-    def _build_pickup_address(fulfillment, store_snapshot):
+    def _build_pickup_address(
+        fulfillment,
+        store_snapshot,
+    ):
+
         return {
-            "address_line_1": store_snapshot["address_line_1"],
-            "address_line_2": store_snapshot["address_line_2"],
+            "contact_name": store_snapshot["contact_name"],
+            "contact_phone": store_snapshot["contact_phone"],
+            "address_line_1": (
+                store_snapshot["address_line_1"]
+            ),
+            "address_line_2": (
+                store_snapshot["address_line_2"]
+            ),
             "city": store_snapshot["city"],
             "state": store_snapshot["state"],
             "country": store_snapshot["country"],
@@ -319,25 +431,53 @@ class DeliveryService:
         }
 
     # ==================================================
+    # Address Contact Validation
+    # ==================================================
+
+    @staticmethod
+    def _require_address_contacts(
+        *,
+        address,
+        label,
+    ):
+
+        for field in ("contact_name", "contact_phone"):
+
+            value = address.get(field)
+
+            if not (value or "").strip():
+
+                raise ValueError(
+                    f"{label.capitalize()} address is "
+                    f"missing {field}."
+                )
+
+    # ==================================================
     # Package Summary
     # ==================================================
 
     @staticmethod
     def _get_package_summary(fulfillment):
+
         packages = fulfillment.packages.all()
 
         package_count = packages.count()
         total_weight = Decimal("0.000")
 
         for package in packages:
+
             weight = getattr(package, "weight", None)
+
             if weight is None:
                 continue
+
             total_weight += Decimal(str(weight))
 
         return {
             "count": package_count,
-            "weight": total_weight.quantize(Decimal("0.001")),
+            "weight": total_weight.quantize(
+                Decimal("0.001"),
+            ),
         }
 
     # ==================================================
@@ -347,48 +487,45 @@ class DeliveryService:
     @staticmethod
     def _apply_pricing(delivery, pricing):
         """
-        Map PricingCalculator's result onto Delivery.
+        Map the pricing breakdown onto Delivery fields.
 
-        See module docstring for the mapping and rationale.
+        Assumes the pricing calculator has already applied
+        the vehicle multiplier to each per-vehicle
+        component, so `base_price`, `distance_price`, and
+        `package_fee` are the already-scaled values that
+        should be stored directly.
         """
 
-        delivery.base_price = Decimal(
-            str(pricing.get("base_price", 0))
-        ).quantize(Decimal("0.01"))
+        def q(value):
 
-        delivery.distance_price = Decimal(
-            str(pricing.get("distance_price", 0))
-        ).quantize(Decimal("0.01"))
+            return Decimal(str(value)).quantize(
+                Decimal("0.01"),
+            )
 
-        # package_fee * vehicle_multiplier -> weight_price
-        package_fee = Decimal(
-            str(pricing.get("package_fee", 0))
+        delivery.base_price = q(
+            pricing.get("base_price", 0),
         )
-        vehicle_multiplier = Decimal(
-            str(pricing.get("vehicle_multiplier", 1))
+        delivery.distance_price = q(
+            pricing.get("distance_price", 0),
         )
-        delivery.weight_price = (
-            package_fee * vehicle_multiplier
-        ).quantize(Decimal("0.01"))
+        delivery.weight_price = q(
+            pricing.get("package_fee", 0),
+        )
+        delivery.surge_price = q(
+            pricing.get("surge_fee", 0),
+        )
+        delivery.insurance_fee = q(
+            pricing.get("insurance_fee", 0),
+        )
+        delivery.service_fee = q(
+            pricing.get("service_fee", 0),
+        )
+        delivery.discount = q(
+            pricing.get("discount", 0),
+        )
 
-        delivery.surge_price = Decimal(
-            str(pricing.get("surge_fee", 0))
-        ).quantize(Decimal("0.01"))
-
-        delivery.insurance_fee = Decimal(
-            str(pricing.get("insurance_fee", 0))
-        ).quantize(Decimal("0.01"))
-
-        delivery.service_fee = Decimal(
-            str(pricing.get("service_fee", 0))
-        ).quantize(Decimal("0.01"))
-
-        delivery.discount = Decimal(
-            str(pricing.get("discount", 0))
-        ).quantize(Decimal("0.01"))
-
-        # Recompute total from mapped components so that
-        # Delivery.clean()'s invariant holds.
+        # Recompute total from the mapped fields so the
+        # Delivery.clean() invariant holds.
         calculated_total = (
             delivery.base_price
             + delivery.distance_price
@@ -402,7 +539,10 @@ class DeliveryService:
         if calculated_total < Decimal("0.00"):
             calculated_total = Decimal("0.00")
 
-        delivery.total_price = calculated_total.quantize(Decimal("0.01"))
-
+        delivery.total_price = q(calculated_total)
         delivery.estimated_price = delivery.total_price
-        delivery.currency = pricing.get("currency", delivery.currency)
+
+        currency = pricing.get("currency")
+
+        if currency:
+            delivery.currency = currency

@@ -10,6 +10,7 @@ class Notification(TimeStampedModel):
         WALLET = "WALLET", "Wallet"
         SYSTEM = "SYSTEM", "System"
         PROMOTION = "PROMOTION", "Promotion"
+        DELIVERY_OFFER = "DELIVERY_OFFER", "Delivery Offer"
 
     id = models.UUIDField(
         primary_key=True,

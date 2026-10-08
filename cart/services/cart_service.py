@@ -1,4 +1,5 @@
 from decimal import Decimal
+
 from uuid import UUID
 
 from django.db import transaction
@@ -36,9 +37,7 @@ class CartService:
     # ==================================================
 
     @staticmethod
-    def get_active_cart(
-        customer,
-    ):
+    def get_active_cart(customer):
         """
         Return the customer's active cart.
 
@@ -68,7 +67,6 @@ class CartService:
         )
 
         if cart is not None:
-
             return cart
 
         return Cart.objects.create(
@@ -164,9 +162,7 @@ class CartService:
                 quantity=new_quantity,
             )
 
-            cart_item.quantity = (
-                new_quantity
-            )
+            cart_item.quantity = new_quantity
 
             cart_item.save(
                 update_fields=[
@@ -679,9 +675,7 @@ class CartService:
     # ==================================================
 
     @staticmethod
-    def _get_product(
-        product_id,
-    ):
+    def _get_product(product_id):
         """
         Retrieve a product using its UUID.
         """
@@ -716,9 +710,7 @@ class CartService:
     # ==================================================
 
     @staticmethod
-    def _get_variant(
-        variant_id,
-    ):
+    def _get_variant(variant_id):
         """
         Retrieve a product variant using its UUID.
         """
@@ -758,7 +750,7 @@ class CartService:
     ):
         """
         Ensure that the selected variant belongs
-        to the selected product.
+        to the selected product and can be purchased.
         """
 
         if variant.product_id != product.pk:
@@ -766,19 +758,6 @@ class CartService:
             raise ValueError(
                 "Selected variant does not "
                 "belong to this product."
-            )
-
-        if not variant.product.is_available:
-
-            raise ValueError(
-                "Selected product is not available."
-            )
-
-        if not variant.is_available:
-
-            raise ValueError(
-                "Selected product variant "
-                "is not available."
             )
 
         if not variant.can_be_purchased:
@@ -838,9 +817,7 @@ class CartService:
     # ==================================================
 
     @staticmethod
-    def _validate_item_availability(
-        item,
-    ):
+    def _validate_item_availability(item):
         """
         Validate that a cart item can still be
         purchased.
@@ -848,7 +825,7 @@ class CartService:
 
         if item.variant is not None:
 
-            if not item.variant.is_available:
+            if not item.variant.can_be_purchased:
 
                 raise ValueError(
                     "Selected product variant "
@@ -890,9 +867,7 @@ class CartService:
                 "Product does not have a valid price."
             )
 
-        price = Decimal(
-            str(price),
-        )
+        price = Decimal(str(price))
 
         if price < Decimal("0.00"):
 
@@ -914,20 +889,12 @@ class CartService:
         """
         Convert a value to UUID.
 
-        Accepts both:
-
-            UUID object
-
-        and:
-
-            UUID string
+        Accepts both a UUID object and a UUID string.
         """
 
         try:
 
-            return UUID(
-                str(value),
-            )
+            return UUID(str(value))
 
         except (
             TypeError,
@@ -944,18 +911,14 @@ class CartService:
     # ==================================================
 
     @staticmethod
-    def _validate_quantity(
-        quantity,
-    ):
+    def _validate_quantity(quantity):
         """
         Normalize and validate quantity.
         """
 
         try:
 
-            quantity = int(
-                quantity,
-            )
+            quantity = int(quantity)
 
         except (
             TypeError,

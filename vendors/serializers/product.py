@@ -492,6 +492,7 @@ class ProductCreateSerializer(serializers.ModelSerializer):
             "track_inventory",
             "is_active",
             "is_published",
+            "is_perishable",
             "is_featured",
             "sort_order",
             "images",

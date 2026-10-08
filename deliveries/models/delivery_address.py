@@ -1,6 +1,14 @@
 import uuid
+
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+)
 from django.db import models
+
 from common.models import TimeStampedModel
 
 
@@ -128,13 +136,21 @@ class DeliveryAddress(TimeStampedModel):
     # ==================================================
 
     latitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
+        max_digits=10,
+        decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-90")),
+            MaxValueValidator(Decimal("90")),
+        ],
     )
 
     longitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
+        max_digits=10,
+        decimal_places=7,
+        validators=[
+            MinValueValidator(Decimal("-180")),
+            MaxValueValidator(Decimal("180")),
+        ],
     )
 
     # ==================================================
@@ -156,16 +172,9 @@ class DeliveryAddress(TimeStampedModel):
                 ],
                 name="unique_delivery_address_type",
             ),
-
         ]
 
         indexes = [
-
-            models.Index(
-                fields=[
-                    "delivery",
-                ],
-            ),
 
             models.Index(
                 fields=[
@@ -224,8 +233,9 @@ class DeliveryAddress(TimeStampedModel):
         # Address Type
         # ----------------------------------------------
 
-        if self.address_type not in dict(
-            self.AddressType.choices
+        if (
+            self.address_type
+            not in self.AddressType.values
         ):
 
             raise ValidationError(
@@ -241,7 +251,7 @@ class DeliveryAddress(TimeStampedModel):
         # Contact Name
         # ----------------------------------------------
 
-        if not self.contact_name.strip():
+        if not (self.contact_name or "").strip():
 
             raise ValidationError(
                 {
@@ -255,7 +265,7 @@ class DeliveryAddress(TimeStampedModel):
         # Contact Phone
         # ----------------------------------------------
 
-        if not self.contact_phone.strip():
+        if not (self.contact_phone or "").strip():
 
             raise ValidationError(
                 {
@@ -269,7 +279,7 @@ class DeliveryAddress(TimeStampedModel):
         # Address
         # ----------------------------------------------
 
-        if not self.address_line_1.strip():
+        if not (self.address_line_1 or "").strip():
 
             raise ValidationError(
                 {
@@ -279,60 +289,19 @@ class DeliveryAddress(TimeStampedModel):
                 }
             )
 
-        # ----------------------------------------------
-        # Latitude
-        # ----------------------------------------------
-
-        if not (
-            -90
-            <= self.latitude
-            <= 90
-        ):
-
-            raise ValidationError(
-                {
-                    "latitude": (
-                        "Latitude must be between "
-                        "-90 and 90."
-                    )
-                }
-            )
-
-        # ----------------------------------------------
-        # Longitude
-        # ----------------------------------------------
-
-        if not (
-            -180
-            <= self.longitude
-            <= 180
-        ):
-
-            raise ValidationError(
-                {
-                    "longitude": (
-                        "Longitude must be between "
-                        "-180 and 180."
-                    )
-                }
-            )
-
     # ==================================================
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+    def save(self, *args, **kwargs):
 
-        self.full_clean()
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Properties
@@ -360,8 +329,8 @@ class DeliveryAddress(TimeStampedModel):
     def location(self):
 
         return {
-            "latitude": self.latitude,
-            "longitude": self.longitude,
+            "latitude": float(self.latitude),
+            "longitude": float(self.longitude),
         }
 
     @property

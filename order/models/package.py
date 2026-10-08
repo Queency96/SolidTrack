@@ -1,9 +1,12 @@
 from decimal import Decimal
-import uuid
-from django.core.exceptions import ValidationError
-from django.db import models
-from common.models import TimeStampedModel
 
+import uuid
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
+from django.db import models
+
+from common.models import TimeStampedModel
 
 
 class Package(TimeStampedModel):
@@ -22,108 +25,28 @@ class Package(TimeStampedModel):
             = physical parcel containing one or more items
 
     One OrderFulfillment may contain multiple Packages.
-
-    Example:
-
-        Order
-          │
-          └── OrderFulfillment
-                  │
-                  ├── Package A
-                  ├── Package B
-                  └── Package C
     """
-
-    # ==================================================
-    # Package Type
-    # ==================================================
 
     class PackageType(models.TextChoices):
 
-        ENVELOPE = (
-            "envelope",
-            "Envelope",
-        )
-
-        SMALL_BOX = (
-            "small_box",
-            "Small Box",
-        )
-
-        MEDIUM_BOX = (
-            "medium_box",
-            "Medium Box",
-        )
-
-        LARGE_BOX = (
-            "large_box",
-            "Large Box",
-        )
-
-        CUSTOM = (
-            "custom",
-            "Custom",
-        )
-
-    # ==================================================
-    # Package Status
-    # ==================================================
+        ENVELOPE = ("envelope", "Envelope")
+        SMALL_BOX = ("small_box", "Small Box")
+        MEDIUM_BOX = ("medium_box", "Medium Box")
+        LARGE_BOX = ("large_box", "Large Box")
+        CUSTOM = ("custom", "Custom")
 
     class Status(models.TextChoices):
 
-        CREATED = (
-            "created",
-            "Created",
-        )
-
-        PACKING = (
-            "packing",
-            "Packing",
-        )
-
-        PACKED = (
-            "packed",
-            "Packed",
-        )
-
-        READY_FOR_PICKUP = (
-            "ready_for_pickup",
-            "Ready for Pickup",
-        )
-
-        PICKED_UP = (
-            "picked_up",
-            "Picked Up",
-        )
-
-        IN_TRANSIT = (
-            "in_transit",
-            "In Transit",
-        )
-
-        DELIVERED = (
-            "delivered",
-            "Delivered",
-        )
-
-        CANCELLED = (
-            "cancelled",
-            "Cancelled",
-        )
-
-        LOST = (
-            "lost",
-            "Lost",
-        )
-
-        DAMAGED = (
-            "damaged",
-            "Damaged",
-        )
-
-    # ==================================================
-    # ID
-    # ==================================================
+        CREATED = ("created", "Created")
+        PACKING = ("packing", "Packing")
+        PACKED = ("packed", "Packed")
+        READY_FOR_PICKUP = ("ready_for_pickup", "Ready for Pickup")
+        PICKED_UP = ("picked_up", "Picked Up")
+        IN_TRANSIT = ("in_transit", "In Transit")
+        DELIVERED = ("delivered", "Delivered")
+        CANCELLED = ("cancelled", "Cancelled")
+        LOST = ("lost", "Lost")
+        DAMAGED = ("damaged", "Damaged")
 
     id = models.UUIDField(
         primary_key=True,
@@ -131,19 +54,11 @@ class Package(TimeStampedModel):
         editable=False,
     )
 
-    # ==================================================
-    # Fulfillment
-    # ==================================================
-
     fulfillment = models.ForeignKey(
         "order.OrderFulfillment",
         on_delete=models.PROTECT,
         related_name="packages",
     )
-
-    # ==================================================
-    # Package Number
-    # ==================================================
 
     package_number = models.CharField(
         max_length=50,
@@ -152,10 +67,6 @@ class Package(TimeStampedModel):
         db_index=True,
     )
 
-    # ==================================================
-    # Tracking
-    # ==================================================
-
     tracking_number = models.CharField(
         max_length=100,
         unique=True,
@@ -163,19 +74,11 @@ class Package(TimeStampedModel):
         db_index=True,
     )
 
-    # ==================================================
-    # Package Type
-    # ==================================================
-
     package_type = models.CharField(
         max_length=30,
         choices=PackageType.choices,
         default=PackageType.CUSTOM,
     )
-
-    # ==================================================
-    # Status
-    # ==================================================
 
     status = models.CharField(
         max_length=30,
@@ -192,6 +95,7 @@ class Package(TimeStampedModel):
         max_digits=10,
         decimal_places=3,
         default=Decimal("0.000"),
+        validators=[MinValueValidator(Decimal("0.000"))],
         help_text="Weight in kilograms.",
     )
 
@@ -199,6 +103,7 @@ class Package(TimeStampedModel):
         max_digits=10,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
         help_text="Length in centimeters.",
     )
 
@@ -206,6 +111,7 @@ class Package(TimeStampedModel):
         max_digits=10,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
         help_text="Width in centimeters.",
     )
 
@@ -213,6 +119,7 @@ class Package(TimeStampedModel):
         max_digits=10,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
         help_text="Height in centimeters.",
     )
 
@@ -241,6 +148,7 @@ class Package(TimeStampedModel):
         max_digits=12,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
     )
 
     currency = models.CharField(
@@ -257,10 +165,6 @@ class Package(TimeStampedModel):
         blank=True,
         default="",
     )
-
-    # ==================================================
-    # Packaging Information
-    # ==================================================
 
     packaging_note = models.TextField(
         blank=True,
@@ -315,146 +219,39 @@ class Package(TimeStampedModel):
 
     class Meta:
 
-        ordering = [
-            "created_at",
-        ]
+        ordering = ["created_at"]
 
         indexes = [
-
             models.Index(
-                fields=[
-                    "fulfillment",
-                ],
-                name="package_fulfillment_idx",
-            ),
-
-            models.Index(
-                fields=[
-                    "status",
-                ],
+                fields=["status"],
                 name="package_status_idx",
             ),
-
             models.Index(
-                fields=[
-                    "fulfillment",
-                    "status",
-                ],
+                fields=["fulfillment", "status"],
                 name="package_fulfillment_status_idx",
             ),
-
             models.Index(
-                fields=[
-                    "tracking_number",
-                ],
-                name="package_tracking_idx",
-            ),
-
-            models.Index(
-                fields=[
-                    "created_at",
-                ],
+                fields=["created_at"],
                 name="package_created_idx",
             ),
-
         ]
-
-    # ==================================================
-    # String
-    # ==================================================
 
     def __str__(self):
 
-        return (
-            f"Package "
-            f"{self.package_number}"
-        )
-
-    # ==================================================
-    # Validation
-    # ==================================================
+        return f"Package {self.package_number}"
 
     def clean(self):
-
-        # ----------------------------------------------
-        # Fulfillment
-        # ----------------------------------------------
 
         if self.fulfillment_id is None:
 
             raise ValidationError(
                 {
                     "fulfillment": (
-                        "A package must belong "
-                        "to an order fulfillment."
+                        "A package must belong to an "
+                        "order fulfillment."
                     )
                 }
             )
-
-        # ----------------------------------------------
-        # Weight
-        # ----------------------------------------------
-
-        if self.weight < Decimal("0.000"):
-
-            raise ValidationError(
-                {
-                    "weight": (
-                        "Package weight cannot "
-                        "be negative."
-                    )
-                }
-            )
-
-        # ----------------------------------------------
-        # Dimensions
-        # ----------------------------------------------
-
-        dimension_fields = [
-            "length",
-            "width",
-            "height",
-        ]
-
-        for field_name in dimension_fields:
-
-            value = getattr(
-                self,
-                field_name,
-            )
-
-            if value < Decimal("0.00"):
-
-                raise ValidationError(
-                    {
-                        field_name: (
-                            f"{field_name.capitalize()} "
-                            "cannot be negative."
-                        )
-                    }
-                )
-
-        # ----------------------------------------------
-        # Declared Value
-        # ----------------------------------------------
-
-        if (
-            self.declared_value
-            < Decimal("0.00")
-        ):
-
-            raise ValidationError(
-                {
-                    "declared_value": (
-                        "Declared value cannot "
-                        "be negative."
-                    )
-                }
-            )
-
-        # ----------------------------------------------
-        # Special Handling
-        # ----------------------------------------------
 
         if (
             self.requires_special_handling
@@ -464,132 +261,64 @@ class Package(TimeStampedModel):
             raise ValidationError(
                 {
                     "special_handling_note": (
-                        "A special handling note "
-                        "is required when special "
-                        "handling is enabled."
+                        "A special handling note is "
+                        "required when special handling "
+                        "is enabled."
                     )
                 }
             )
 
-        # ----------------------------------------------
-        # Status Timestamps
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Status timestamp requirements
+        # --------------------------------------------------
+
+        status_requirements = {
+            self.Status.PACKED: "packed_at",
+            self.Status.READY_FOR_PICKUP: "ready_for_pickup_at",
+            self.Status.PICKED_UP: "picked_up_at",
+            self.Status.IN_TRANSIT: "in_transit_at",
+            self.Status.DELIVERED: "delivered_at",
+            self.Status.CANCELLED: "cancelled_at",
+        }
+
+        required_field = status_requirements.get(self.status)
 
         if (
-            self.status == self.Status.PACKED
-            and self.packed_at is None
+            required_field
+            and getattr(self, required_field) is None
         ):
 
             raise ValidationError(
                 {
-                    "packed_at": (
-                        "Packed timestamp is "
-                        "required."
+                    required_field: (
+                        f"{required_field.replace('_', ' ').capitalize()} "
+                        f"is required when status is "
+                        f"{self.status}."
                     )
                 }
             )
 
-        if (
-            self.status
-            == self.Status.READY_FOR_PICKUP
-            and self.ready_for_pickup_at is None
-        ):
-
-            raise ValidationError(
-                {
-                    "ready_for_pickup_at": (
-                        "Ready-for-pickup timestamp "
-                        "is required."
-                    )
-                }
-            )
-
-        if (
-            self.status == self.Status.PICKED_UP
-            and self.picked_up_at is None
-        ):
-
-            raise ValidationError(
-                {
-                    "picked_up_at": (
-                        "Picked-up timestamp is "
-                        "required."
-                    )
-                }
-            )
-
-        if (
-            self.status == self.Status.IN_TRANSIT
-            and self.in_transit_at is None
-        ):
-
-            raise ValidationError(
-                {
-                    "in_transit_at": (
-                        "In-transit timestamp is "
-                        "required."
-                    )
-                }
-            )
-
-        if (
-            self.status == self.Status.DELIVERED
-            and self.delivered_at is None
-        ):
-
-            raise ValidationError(
-                {
-                    "delivered_at": (
-                        "Delivered timestamp is "
-                        "required."
-                    )
-                }
-            )
-
-        if (
-            self.status == self.Status.CANCELLED
-            and self.cancelled_at is None
-        ):
-
-            raise ValidationError(
-                {
-                    "cancelled_at": (
-                        "Cancelled timestamp is "
-                        "required."
-                    )
-                }
-            )
-
-    # ==================================================
-    # Save
-    # ==================================================
-
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+    def save(self, *args, **kwargs):
 
         if not self.package_number:
 
             self.package_number = (
-                f"PKG-"
-                f"{uuid.uuid4().hex[:12].upper()}"
+                f"PKG-{uuid.uuid4().hex[:12].upper()}"
             )
 
         if not self.tracking_number:
 
             self.tracking_number = (
-                f"TRK-"
-                f"{uuid.uuid4().hex[:14].upper()}"
+                f"TRK-{uuid.uuid4().hex[:14].upper()}"
             )
 
-        self.full_clean()
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Properties
@@ -598,19 +327,12 @@ class Package(TimeStampedModel):
     @property
     def volume_cm3(self):
 
-        return (
-            self.length
-            * self.width
-            * self.height
-        )
+        return self.length * self.width * self.height
 
     @property
     def is_ready_for_pickup(self):
 
-        return (
-            self.status
-            == self.Status.READY_FOR_PICKUP
-        )
+        return self.status == self.Status.READY_FOR_PICKUP
 
     @property
     def is_picked_up(self):
@@ -624,26 +346,17 @@ class Package(TimeStampedModel):
     @property
     def is_in_transit(self):
 
-        return (
-            self.status
-            == self.Status.IN_TRANSIT
-        )
+        return self.status == self.Status.IN_TRANSIT
 
     @property
     def is_delivered(self):
 
-        return (
-            self.status
-            == self.Status.DELIVERED
-        )
+        return self.status == self.Status.DELIVERED
 
     @property
     def is_cancelled(self):
 
-        return (
-            self.status
-            == self.Status.CANCELLED
-        )
+        return self.status == self.Status.CANCELLED
 
     @property
     def is_terminal(self):
@@ -654,20 +367,22 @@ class Package(TimeStampedModel):
             self.Status.LOST,
             self.Status.DAMAGED,
         ]
-    
+
     @property
     def item_quantity(self):
 
         return sum(
-            item.quantity
-            for item in self.items.all()
+            item.quantity for item in self.items.all()
         )
-    
-
-
 
 
 class PackageItem(models.Model):
+    """
+    Link between a Package and an OrderItem.
+
+    A package may contain quantities of one or more order
+    items. An order item may be split across packages.
+    """
 
     id = models.UUIDField(
         primary_key=True,
@@ -689,78 +404,56 @@ class PackageItem(models.Model):
 
     quantity = models.PositiveIntegerField(
         default=1,
+        validators=[MinValueValidator(1)],
     )
 
     class Meta:
 
         constraints = [
             models.UniqueConstraint(
-                fields=[
-                    "package",
-                    "order_item",
-                ],
+                fields=["package", "order_item"],
                 name="unique_package_order_item",
             ),
         ]
 
         indexes = [
-            models.Index(
-                fields=[
-                    "package",
-                ],
-            ),
-            models.Index(
-                fields=[
-                    "order_item",
-                ],
-            ),
+            models.Index(fields=["order_item"]),
         ]
 
     def clean(self):
 
-        if self.quantity <= 0:
-            raise ValidationError(
-                {
-                    "quantity": (
-                        "Quantity must be greater "
-                        "than zero."
-                    )
-                }
-            )
-
         if self.package_id is None:
+
             raise ValidationError(
-                {
-                    "package": (
-                        "Package is required."
-                    )
-                }
+                {"package": "Package is required."}
             )
 
         if self.order_item_id is None:
+
             raise ValidationError(
-                {
-                    "order_item": (
-                        "Order item is required."
-                    )
-                }
+                {"order_item": "Order item is required."}
             )
 
         if (
             self.package.fulfillment_id
             != self.order_item.fulfillment_id
         ):
+
             raise ValidationError(
                 {
                     "order_item": (
-                        "Order item must belong "
-                        "to the package fulfillment."
+                        "Order item must belong to the "
+                        "package fulfillment."
                     )
                 }
             )
 
     def save(self, *args, **kwargs):
 
-        self.full_clean()
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
         super().save(*args, **kwargs)

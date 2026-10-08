@@ -1,125 +1,359 @@
-import uuid
+"""
+Refund orchestration for fulfillment failures.
+
+Refunds are written directly to WalletTransaction with a
+deterministic reference so retries cannot double-credit.
+
+Refund rules
+------------
+For a fulfillment that cannot be completed:
+
+    refundable_subtotal = sum of subtotals of all
+                          UNAVAILABLE items where
+                          is_perishable is False
+
+    refund              = refundable_subtotal
+                        + 100% of fulfillment's
+                          delivery_fee
+                        + 100% of fulfillment's
+                          service_fee
+                        + 100% of fulfillment's
+                          insurance_fee
+                        - fulfillment's discount_amount
+
+Perishable items are excluded from the refund by policy.
+Fees are returned in full because the fulfillment did not
+complete and no delivery occurred.
+"""
+
+import logging
+
 from decimal import Decimal
-from django.db import transaction
-from .models import Wallet, WalletTransaction
+
+from django.db import IntegrityError, transaction
+
+from order.models import OrderItem
+from wallet.models import WalletTransaction
 
 
-
-@staticmethod
-def generate_reference(prefix="TXN"):
-    return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
-
-# reference=WalletService.generate_reference("DEP")
-# reference=WalletService.generate_reference("WTH")
-# reference=WalletService.generate_reference("REF")
-# reference=WalletService.generate_reference("PAY")
+logger = logging.getLogger(__name__)
 
 
-class WalletService:
+class RefundService:
+    """
+    Idempotent refund writer for fulfillment failures.
+    """
 
-    @staticmethod
+    REFUND_REFERENCE_PREFIX = "REF-FULFILLMENT-"
+
+    # ==================================================
+    # Public API
+    # ==================================================
+
+    @classmethod
     @transaction.atomic
-    def _update_balance(
-        wallet,
-        amount,
-        transaction_type,
-        description="",
-        allow_negative=False,
+    def refund_fulfillment(
+        cls,
+        *,
+        fulfillment,
+        reason="",
     ):
         """
-        Internal method for updating wallet balance and creating
-        a transaction record.
+        Refund the customer for a failed fulfillment.
+
+        Idempotent: repeated calls with the same fulfillment
+        return the existing WalletTransaction without
+        crediting again.
+
+        Returns:
+            WalletTransaction | None
+            None when the computed refund is zero.
         """
 
-        amount = Decimal(str(amount))
+        if fulfillment is None:
+            raise ValueError("Fulfillment is required.")
 
-        wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+        if fulfillment.order is None:
+            raise ValueError(
+                "Fulfillment has no order."
+            )
+
+        customer = fulfillment.order.customer
+
+        if customer is None:
+            raise ValueError(
+                "Fulfillment order has no customer."
+            )
+
+        # --------------------------------------------------
+        # Resolve wallet without relying on reverse
+        # accessor semantics.
+        # --------------------------------------------------
+
+        from wallet.models import Wallet
+
+        wallet = (
+            Wallet.objects
+            .select_for_update()
+            .filter(user=customer)
+            .first()
+        )
+
+        if wallet is None:
+            raise ValueError(
+                "Customer does not have a wallet."
+            )
+
+        reference = cls._idempotency_reference(
+            fulfillment=fulfillment,
+        )
+
+        # --------------------------------------------------
+        # Idempotency: return existing refund if present.
+        # --------------------------------------------------
+
+        existing = (
+            WalletTransaction.objects
+            .filter(reference=reference)
+            .first()
+        )
+
+        if existing is not None:
+            return existing
+
+        # --------------------------------------------------
+        # Compute refund.
+        # --------------------------------------------------
+
+        amount, breakdown = cls.compute_refund(
+            fulfillment=fulfillment,
+        )
+
+        if amount <= Decimal("0.00"):
+
+            logger.info(
+                "Refund for fulfillment %s computed to zero "
+                "(refundable=%s, perishable=%s)",
+                fulfillment.pk,
+                breakdown["refundable_subtotal"],
+                breakdown["non_refundable_subtotal"],
+            )
+
+            return None
+
+        # --------------------------------------------------
+        # Write the transaction.
+        #
+        # Wallet row is already locked above. Handle the
+        # narrow race where a concurrent worker created
+        # the same reference between our check and create.
+        # --------------------------------------------------
 
         balance_before = wallet.balance
+        balance_after = balance_before + amount
 
-        if (
-            transaction_type in (
-                WalletTransaction.TransactionType.DEBIT,
-                WalletTransaction.TransactionType.WITHDRAWAL,
+        description = cls._build_description(
+            fulfillment=fulfillment,
+            breakdown=breakdown,
+            reason=reason,
+        )
+
+        try:
+
+            transaction_row = (
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    transaction_type=(
+                        WalletTransaction
+                        .TransactionType
+                        .REFUND
+                    ),
+                    amount=amount,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    reference=reference,
+                    description=description,
+                    status=(
+                        WalletTransaction
+                        .Status
+                        .SUCCESS
+                    ),
+                )
             )
-            and not allow_negative
-            and balance_before < amount
-        ):
-            raise ValueError("Insufficient wallet balance.")
 
-        if transaction_type in (
-            WalletTransaction.TransactionType.CREDIT,
-            WalletTransaction.TransactionType.DEPOSIT,
-            WalletTransaction.TransactionType.REFUND,
-        ):
-            wallet.balance += amount
+        except IntegrityError:
 
-        elif transaction_type in (
-            WalletTransaction.TransactionType.DEBIT,
-            WalletTransaction.TransactionType.WITHDRAWAL,
-        ):
-            wallet.balance -= amount
+            # Another worker won the race. Return the
+            # existing row so the caller sees the same
+            # result as an idempotent replay.
+            existing = (
+                WalletTransaction.objects
+                .filter(reference=reference)
+                .first()
+            )
 
-        else:
-            raise ValueError("Invalid transaction type.")
+            if existing is not None:
+                return existing
 
+            raise
+
+        wallet.balance = balance_after
         wallet.save(update_fields=["balance"])
 
-        WalletTransaction.objects.create(
-            wallet=wallet,
-            transaction_type=transaction_type,
-            amount=amount,
-            balance_before=balance_before,
-            balance_after=wallet.balance,
-            reference=WalletService.generate_reference("REF"),
-            # reference=str(uuid.uuid4()),
-            description=description,
-            status=WalletTransaction.Status.SUCCESS,
+        logger.info(
+            "Refunded %s to wallet %s for fulfillment %s",
+            amount,
+            wallet.pk,
+            fulfillment.pk,
         )
 
-        return wallet
+        return transaction_row
+
+    # ==================================================
+    # Computation
+    # ==================================================
+
+    @classmethod
+    def compute_refund(cls, *, fulfillment):
+        """
+        Compute the refund amount and breakdown for a
+        fulfillment.
+
+        Returns:
+            (amount, breakdown_dict)
+        """
+
+        unavailable_items = list(
+            OrderItem.objects
+            .filter(
+                fulfillment=fulfillment,
+                fulfillment_status=(
+                    OrderItem
+                    .FulfillmentStatus
+                    .UNAVAILABLE
+                ),
+            )
+        )
+
+        refundable_subtotal = Decimal("0.00")
+        non_refundable_subtotal = Decimal("0.00")
+
+        for item in unavailable_items:
+
+            subtotal = Decimal(str(item.subtotal))
+
+            if item.is_refundable:
+                refundable_subtotal += subtotal
+            else:
+                non_refundable_subtotal += subtotal
+
+        # --------------------------------------------------
+        # Fees: 100% refunded on fulfillment failure.
+        # --------------------------------------------------
+
+        delivery_fee = Decimal(
+            str(fulfillment.delivery_fee or 0),
+        )
+        service_fee = Decimal(
+            str(fulfillment.service_fee or 0),
+        )
+        insurance_fee = Decimal(
+            str(fulfillment.insurance_fee or 0),
+        )
+        discount_amount = Decimal(
+            str(fulfillment.discount_amount or 0),
+        )
+
+        fees_refunded = (
+            delivery_fee
+            + service_fee
+            + insurance_fee
+        )
+
+        amount = (
+            refundable_subtotal
+            + fees_refunded
+            - discount_amount
+        )
+
+        if amount < Decimal("0.00"):
+            amount = Decimal("0.00")
+
+        amount = amount.quantize(Decimal("0.01"))
+
+        return amount, {
+            "refundable_subtotal": (
+                refundable_subtotal.quantize(
+                    Decimal("0.01"),
+                )
+            ),
+            "non_refundable_subtotal": (
+                non_refundable_subtotal.quantize(
+                    Decimal("0.01"),
+                )
+            ),
+            "delivery_fee": delivery_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "service_fee": service_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "insurance_fee": insurance_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "fees_refunded": fees_refunded.quantize(
+                Decimal("0.01"),
+            ),
+            "discount_amount": discount_amount.quantize(
+                Decimal("0.01"),
+            ),
+            "total": amount,
+        }
+
+    # ==================================================
+    # Helpers
+    # ==================================================
+
+    @classmethod
+    def _idempotency_reference(cls, *, fulfillment):
+
+        return (
+            f"{cls.REFUND_REFERENCE_PREFIX}"
+            f"{fulfillment.pk}"
+        )
 
     @staticmethod
-    def credit(wallet, amount, description=""):
-        return WalletService._update_balance(
-            wallet=wallet,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.CREDIT,
-            description=description,
+    def _build_description(
+        *,
+        fulfillment,
+        breakdown,
+        reason,
+    ):
+
+        parts = [
+            f"Refund for fulfillment {fulfillment.pk}",
+        ]
+
+        if reason:
+            parts.append(f"Reason: {reason}")
+
+        parts.append(
+            "Refundable items: "
+            f"{breakdown['refundable_subtotal']}"
         )
 
-    @staticmethod
-    def debit(wallet, amount, description=""):
-        return WalletService._update_balance(
-            wallet=wallet,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.DEBIT,
-            description=description,
+        if (
+            breakdown["non_refundable_subtotal"]
+            > Decimal("0.00")
+        ):
+
+            parts.append(
+                "Perishable items not refunded: "
+                f"{breakdown['non_refundable_subtotal']}"
+            )
+
+        parts.append(
+            f"Fees refunded: {breakdown['fees_refunded']}"
         )
 
-    @staticmethod
-    def deposit(wallet, amount, description="Wallet Deposit"):
-        return WalletService._update_balance(
-            wallet=wallet,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.DEPOSIT,
-            description=description,
-        )
-
-    @staticmethod
-    def withdraw(wallet, amount, description="Wallet Withdrawal"):
-        return WalletService._update_balance(
-            wallet=wallet,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.WITHDRAWAL,
-            description=description,
-        )
-
-    @staticmethod
-    def refund(wallet, amount, description="Refund"):
-        return WalletService._update_balance(
-            wallet=wallet,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.REFUND,
-            description=description,
-        )
+        return " | ".join(parts)

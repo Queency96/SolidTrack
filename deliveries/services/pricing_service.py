@@ -71,7 +71,7 @@ class PricingService:
     # ==================================================
 
     @staticmethod
-    def _get_route(data):
+    def get_route(data):
         """
         Calculate the road route.
         """
@@ -136,7 +136,7 @@ class PricingService:
         """
 
         config = cls.get_configuration()
-        route = cls._get_route(data)
+        route = cls.get_route(data)
         calculator = PricingCalculator()
 
         result = calculator.calculate(

@@ -1,6 +1,12 @@
 from decimal import Decimal
+
 import uuid
+
 from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+)
 from django.db import models
 
 
@@ -23,7 +29,7 @@ class Product(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    
+
     # ==================================================
     # Vendor
     # ==================================================
@@ -95,6 +101,9 @@ class Product(models.Model):
         max_digits=12,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[
+            MinValueValidator(Decimal("0.00")),
+        ],
     )
 
     compare_at_price = models.DecimalField(
@@ -114,6 +123,26 @@ class Product(models.Model):
 
     track_inventory = models.BooleanField(
         default=True,
+    )
+
+    # ==================================================
+    # Refund policy
+    # ==================================================
+    #
+    # Perishable products (food, fresh produce, etc.) are
+    # excluded from refunds when a vendor cannot fulfill an
+    # order. The flag is snapshotted onto OrderItem at
+    # checkout so later edits to this field do not affect
+    # historical orders.
+    # ==================================================
+
+    is_perishable = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Perishable items are not refunded when a vendor "
+            "cannot fulfill an order."
+        ),
     )
 
     # ==================================================
@@ -187,7 +216,6 @@ class Product(models.Model):
                     "unique_product_sku_per_vendor"
                 ),
             ),
-
         ]
 
         indexes = [
@@ -222,6 +250,11 @@ class Product(models.Model):
                 ],
             ),
 
+            models.Index(
+                fields=[
+                    "is_perishable",
+                ],
+            ),
         ]
 
     # ==================================================
@@ -298,21 +331,6 @@ class Product(models.Model):
                 )
 
         # ----------------------------------------------
-        # Price
-        # ----------------------------------------------
-
-        if self.price < Decimal("0.00"):
-
-            raise ValidationError(
-                {
-                    "price": (
-                        "Product price cannot "
-                        "be negative."
-                    )
-                }
-            )
-
-        # ----------------------------------------------
         # Compare-at price
         # ----------------------------------------------
 
@@ -332,37 +350,19 @@ class Product(models.Model):
                 }
             )
 
-        # ----------------------------------------------
-        # Inventory
-        # ----------------------------------------------
-
-        if self.stock_quantity < 0:
-
-            raise ValidationError(
-                {
-                    "stock_quantity": (
-                        "Stock quantity cannot "
-                        "be negative."
-                    )
-                }
-            )
-
     # ==================================================
     # Save
     # ==================================================
 
-    def save(
-        self,
-        *args,
-        **kwargs,
-    ):
+    def save(self, *args, **kwargs):
 
-        self.full_clean()
+        if self._state.adding or kwargs.pop(
+            "full_clean",
+            False,
+        ):
+            self.full_clean()
 
-        super().save(
-            *args,
-            **kwargs,
-        )
+        super().save(*args, **kwargs)
 
     # ==================================================
     # Store
@@ -508,5 +508,3 @@ class Product(models.Model):
         return self.availability_status()[
             "is_available"
         ]
-    
-    
