@@ -1,14 +1,14 @@
 """
 Customer-facing order tracking serializers.
 
-NOTE: The delivery OTP is NEVER exposed to the customer through
-this serializer. It is delivered to the customer via SMS, push
-notification, and email when the order enters a delivery-ready
-state. The customer reads it to the rider, who submits it via the
-rider OTP verification endpoint.
+NOTE: The delivery OTP itself is NEVER exposed to the customer
+through this serializer. It is delivered to the customer via SMS,
+push notification, and email when the fulfillment enters
+OUT_FOR_DELIVERY.
 
-The tracking response only shows delivery_otp_verified_at, so the
-customer can see when the handover was confirmed.
+OTP timestamps are exposed per-fulfillment so a customer with
+multiple stores can see each delivery's handover timeline
+separately.
 """
 
 from rest_framework import serializers
@@ -159,6 +159,13 @@ class TrackingDeliverySerializer(serializers.Serializer):
 # ==========================================================
 
 class TrackingFulfillmentSerializer(serializers.ModelSerializer):
+    """
+    One fulfillment's slice of the order.
+
+    OTP timestamps are exposed here (per-store) rather than on
+    the order, since each store's delivery has its own OTP.
+    The OTP itself is never exposed.
+    """
 
     store_name = serializers.CharField(read_only=True)
     items = TrackingOrderItemSerializer(many=True, read_only=True)
@@ -182,6 +189,16 @@ class TrackingFulfillmentSerializer(serializers.ModelSerializer):
 
             "items",
             "delivery",
+
+            # --------------------------------------------------
+            # OTP timestamps — per-fulfillment.
+            #
+            # Exposed so the customer can see when the code was
+            # generated and when the handover was confirmed.
+            # The OTP itself is never returned.
+            # --------------------------------------------------
+            "delivery_otp_generated_at",
+            "delivery_otp_verified_at",
 
             "created_at",
             "processing_at",
@@ -268,10 +285,8 @@ class TrackingOrderDetailSerializer(serializers.ModelSerializer):
     Full tracking representation.
 
     IMPORTANT: The delivery OTP itself is NEVER exposed here.
-    The customer receives the OTP via SMS / push / email.
-
-    Only `delivery_otp_verified_at` is returned so the customer
-    can see when the handover was confirmed.
+    OTP timestamps live on each fulfillment in the `fulfillments`
+    array so a multi-store order shows per-store handover timing.
     """
 
     fulfillments = TrackingFulfillmentSerializer(
@@ -301,15 +316,6 @@ class TrackingOrderDetailSerializer(serializers.ModelSerializer):
 
             "customer_note",
             "shipping_address",
-
-            # --------------------------------------------------
-            # Handover confirmation timestamp.
-            #
-            # The customer sees when the OTP was verified, but
-            # never the OTP itself.
-            # --------------------------------------------------
-            "delivery_otp_generated_at",
-            "delivery_otp_verified_at",
 
             "fulfillments",
 

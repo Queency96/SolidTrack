@@ -912,7 +912,104 @@ class AssignmentService:
 
         cls._set_rider_availability_if_free(assignment.rider)
 
+        cls._set_rider_availability_if_free(assignment.rider)
+
+        # ========================================================
+        # Create the rider earning ledger entry.
+        #
+        # Best-effort: a failure here does not roll back the
+        # delivery transition. The settlement task cannot
+        # credit an earning that was never created, so if
+        # this fails the earning is simply not paid — support
+        # must intervene. In practice this should not fail.
+        # ========================================================
+
+        cls._create_rider_earning(assignment=assignment)
+
         return assignment
+
+
+    # ============================================================
+    # CREATE RIDER EARNING
+    # ============================================================
+
+    @staticmethod
+    def _create_rider_earning(*, assignment):
+        """
+        Create the RiderEarning ledger entry for a completed
+        assignment.
+
+        Idempotent: uses get_or_create keyed by assignment,
+        which is a OneToOneField so at most one row exists.
+
+        Snapshot semantics: gross, commission, and net are
+        captured here from the current delivery state and
+        active PlatformCommission. Later changes to either
+        do not affect this row.
+        """
+
+        try:
+            from decimal import Decimal
+
+            from riders.models import (
+                PlatformCommission,
+                RiderEarning,
+            )
+        except ImportError:
+            logger.exception(
+                "Could not import RiderEarning for "
+                "assignment %s.",
+                assignment.pk,
+            )
+            return
+
+        delivery = assignment.delivery
+
+        if delivery is None:
+            logger.warning(
+                "Assignment %s has no delivery; skipping "
+                "earning creation.",
+                assignment.pk,
+            )
+            return
+
+        gross = delivery.delivery_fee or Decimal("0.00")
+
+        if gross <= Decimal("0.00"):
+            # Zero-fee delivery — record a zero earning so
+            # the ledger is complete.
+            commission = Decimal("0.00")
+            net = Decimal("0.00")
+        else:
+            commission, net = (
+                PlatformCommission.compute_commission(
+                    gross_amount=gross,
+                )
+            )
+
+        try:
+
+            RiderEarning.objects.get_or_create(
+                assignment=assignment,
+                defaults={
+                    "rider": assignment.rider,
+                    "gross_amount": gross,
+                    "commission_amount": commission,
+                    "net_amount": net,
+                    "currency": getattr(
+                        delivery, "currency", "NGN",
+                    ),
+                    "status": RiderEarning.Status.PENDING,
+                },
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to create rider earning for "
+                "assignment %s.",
+                assignment.pk,
+            )
 
     # ============================================================
     # ADMIN / STAFF CANCELLATION

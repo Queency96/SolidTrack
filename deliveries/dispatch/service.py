@@ -1,5 +1,7 @@
 from django.core.cache import cache
+
 from deliveries.models import DispatchConfiguration
+
 from .exceptions import DispatchConfigurationError
 
 
@@ -9,6 +11,10 @@ class DispatchConfigurationService:
 
     Configuration is cached to avoid querying the database
     for every dispatch operation.
+
+    Cache invalidation is handled by
+    deliveries/signals.py, which listens for
+    DispatchConfiguration post_save and post_delete events.
     """
 
     CACHE_KEY = "dispatch_configuration"
@@ -74,3 +80,19 @@ class DispatchConfigurationService:
 
         except DispatchConfigurationError:
             return None
+
+    # ==================================================
+    # Cache Invalidation
+    # ==================================================
+
+    @classmethod
+    def clear_cache(cls):
+        """
+        Clear the cached dispatch configuration.
+
+        Called by deliveries/signals.py whenever a
+        DispatchConfiguration row is created, updated, or
+        deleted.
+        """
+
+        cache.delete(cls.CACHE_KEY)

@@ -27,13 +27,13 @@ complete and no delivery occurred.
 """
 
 import logging
+
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
-from order.models import OrderFulfillment, OrderItem
+from order.models import OrderItem
 from wallet.models import WalletTransaction
-from wallet.service.wallet_service import WalletService
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,12 @@ class RefundService:
 
     @classmethod
     @transaction.atomic
-    def refund_fulfillment(cls, *, fulfillment, reason=""):
+    def refund_fulfillment(
+        cls,
+        *,
+        fulfillment,
+        reason="",
+    ):
         """
         Refund the customer for a failed fulfillment.
 
@@ -69,19 +74,39 @@ class RefundService:
             raise ValueError("Fulfillment is required.")
 
         if fulfillment.order is None:
-            raise ValueError("Fulfillment has no order.")
+            raise ValueError(
+                "Fulfillment has no order."
+            )
 
         customer = fulfillment.order.customer
 
         if customer is None:
-            raise ValueError("Fulfillment order has no customer.")
+            raise ValueError(
+                "Fulfillment order has no customer."
+            )
 
-        wallet = getattr(customer, "wallet", None)
+        # --------------------------------------------------
+        # Resolve wallet without relying on reverse
+        # accessor semantics.
+        # --------------------------------------------------
+
+        from wallet.models import Wallet
+
+        wallet = (
+            Wallet.objects
+            .select_for_update()
+            .filter(user=customer)
+            .first()
+        )
 
         if wallet is None:
-            raise ValueError("Customer does not have a wallet.")
+            raise ValueError(
+                "Customer does not have a wallet."
+            )
 
-        reference = cls._idempotency_reference(fulfillment=fulfillment)
+        reference = cls._idempotency_reference(
+            fulfillment=fulfillment,
+        )
 
         # --------------------------------------------------
         # Idempotency: return existing refund if present.
@@ -100,9 +125,12 @@ class RefundService:
         # Compute refund.
         # --------------------------------------------------
 
-        amount, breakdown = cls.compute_refund(fulfillment=fulfillment)
+        amount, breakdown = cls.compute_refund(
+            fulfillment=fulfillment,
+        )
 
         if amount <= Decimal("0.00"):
+
             logger.info(
                 "Refund for fulfillment %s computed to zero "
                 "(refundable=%s, perishable=%s)",
@@ -110,17 +138,16 @@ class RefundService:
                 breakdown["refundable_subtotal"],
                 breakdown["non_refundable_subtotal"],
             )
+
             return None
 
         # --------------------------------------------------
-        # Lock the wallet row and write the transaction.
+        # Write the transaction.
+        #
+        # Wallet row is already locked above. Handle the
+        # narrow race where a concurrent worker created
+        # the same reference between our check and create.
         # --------------------------------------------------
-
-        wallet = (
-            wallet.__class__.objects
-            .select_for_update()
-            .get(pk=wallet.pk)
-        )
 
         balance_before = wallet.balance
         balance_after = balance_before + amount
@@ -131,16 +158,44 @@ class RefundService:
             reason=reason,
         )
 
-        transaction_row = WalletTransaction.objects.create(
-            wallet=wallet,
-            transaction_type=WalletTransaction.TransactionType.REFUND,
-            amount=amount,
-            balance_before=balance_before,
-            balance_after=balance_after,
-            reference=reference,
-            description=description,
-            status=WalletTransaction.Status.SUCCESS,
-        )
+        try:
+
+            transaction_row = (
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    transaction_type=(
+                        WalletTransaction
+                        .TransactionType
+                        .REFUND
+                    ),
+                    amount=amount,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    reference=reference,
+                    description=description,
+                    status=(
+                        WalletTransaction
+                        .Status
+                        .SUCCESS
+                    ),
+                )
+            )
+
+        except IntegrityError:
+
+            # Another worker won the race. Return the
+            # existing row so the caller sees the same
+            # result as an idempotent replay.
+            existing = (
+                WalletTransaction.objects
+                .filter(reference=reference)
+                .first()
+            )
+
+            if existing is not None:
+                return existing
+
+            raise
 
         wallet.balance = balance_after
         wallet.save(update_fields=["balance"])
@@ -173,7 +228,9 @@ class RefundService:
             .filter(
                 fulfillment=fulfillment,
                 fulfillment_status=(
-                    OrderItem.FulfillmentStatus.UNAVAILABLE
+                    OrderItem
+                    .FulfillmentStatus
+                    .UNAVAILABLE
                 ),
             )
         )
@@ -182,6 +239,7 @@ class RefundService:
         non_refundable_subtotal = Decimal("0.00")
 
         for item in unavailable_items:
+
             subtotal = Decimal(str(item.subtotal))
 
             if item.is_refundable:
@@ -193,13 +251,23 @@ class RefundService:
         # Fees: 100% refunded on fulfillment failure.
         # --------------------------------------------------
 
-        delivery_fee = Decimal(str(fulfillment.delivery_fee or 0))
-        service_fee = Decimal(str(fulfillment.service_fee or 0))
-        insurance_fee = Decimal(str(fulfillment.insurance_fee or 0))
-        discount_amount = Decimal(str(fulfillment.discount_amount or 0))
+        delivery_fee = Decimal(
+            str(fulfillment.delivery_fee or 0),
+        )
+        service_fee = Decimal(
+            str(fulfillment.service_fee or 0),
+        )
+        insurance_fee = Decimal(
+            str(fulfillment.insurance_fee or 0),
+        )
+        discount_amount = Decimal(
+            str(fulfillment.discount_amount or 0),
+        )
 
         fees_refunded = (
-            delivery_fee + service_fee + insurance_fee
+            delivery_fee
+            + service_fee
+            + insurance_fee
         )
 
         amount = (
@@ -214,17 +282,31 @@ class RefundService:
         amount = amount.quantize(Decimal("0.01"))
 
         return amount, {
-            "refundable_subtotal": refundable_subtotal.quantize(
-                Decimal("0.01")
+            "refundable_subtotal": (
+                refundable_subtotal.quantize(
+                    Decimal("0.01"),
+                )
             ),
-            "non_refundable_subtotal": non_refundable_subtotal.quantize(
-                Decimal("0.01")
+            "non_refundable_subtotal": (
+                non_refundable_subtotal.quantize(
+                    Decimal("0.01"),
+                )
             ),
-            "delivery_fee": delivery_fee.quantize(Decimal("0.01")),
-            "service_fee": service_fee.quantize(Decimal("0.01")),
-            "insurance_fee": insurance_fee.quantize(Decimal("0.01")),
-            "fees_refunded": fees_refunded.quantize(Decimal("0.01")),
-            "discount_amount": discount_amount.quantize(Decimal("0.01")),
+            "delivery_fee": delivery_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "service_fee": service_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "insurance_fee": insurance_fee.quantize(
+                Decimal("0.01"),
+            ),
+            "fees_refunded": fees_refunded.quantize(
+                Decimal("0.01"),
+            ),
+            "discount_amount": discount_amount.quantize(
+                Decimal("0.01"),
+            ),
             "total": amount,
         }
 
@@ -234,10 +316,20 @@ class RefundService:
 
     @classmethod
     def _idempotency_reference(cls, *, fulfillment):
-        return f"{cls.REFUND_REFERENCE_PREFIX}{fulfillment.pk}"
+
+        return (
+            f"{cls.REFUND_REFERENCE_PREFIX}"
+            f"{fulfillment.pk}"
+        )
 
     @staticmethod
-    def _build_description(*, fulfillment, breakdown, reason):
+    def _build_description(
+        *,
+        fulfillment,
+        breakdown,
+        reason,
+    ):
+
         parts = [
             f"Refund for fulfillment {fulfillment.pk}",
         ]
@@ -246,12 +338,17 @@ class RefundService:
             parts.append(f"Reason: {reason}")
 
         parts.append(
-            f"Refundable items: {breakdown['refundable_subtotal']}"
+            "Refundable items: "
+            f"{breakdown['refundable_subtotal']}"
         )
 
-        if breakdown["non_refundable_subtotal"] > Decimal("0.00"):
+        if (
+            breakdown["non_refundable_subtotal"]
+            > Decimal("0.00")
+        ):
+
             parts.append(
-                f"Perishable items not refunded: "
+                "Perishable items not refunded: "
                 f"{breakdown['non_refundable_subtotal']}"
             )
 

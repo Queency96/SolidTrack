@@ -54,15 +54,26 @@ class OrderFulfillmentService:
 
     Delivery OTP
     ------------
-    When a fulfillment becomes READY_FOR_DISPATCH, a
-    6-digit OTP is generated on the fulfillment and sent
-    to the customer. The assigned rider must enter this
-    OTP at handover to mark the fulfillment delivered.
+    A 6-digit OTP is generated on the fulfillment when it
+    enters OUT_FOR_DELIVERY — that is, when the rider has
+    physically left the store with the package and is en
+    route to the customer. The OTP is delivered to the
+    customer via SMS and push at that moment. The assigned
+    rider must enter it at handover to mark the
+    fulfillment delivered.
 
-    OTPs are per-fulfillment (i.e. per-store delivery).
-    A multi-store order therefore produces one OTP per
-    store, and each rider verifies only their own
-    assignment.
+    OTPs are per-fulfillment (per-store delivery). A
+    multi-store order produces one OTP per store, and
+    each rider verifies only their own assignment.
+
+    Why OUT_FOR_DELIVERY (not READY_FOR_DISPATCH)
+    ---------------------------------------------
+    Issuing the OTP at READY_FOR_DISPATCH means the
+    customer receives it potentially hours before a rider
+    is even assigned, and again after any cancel-and-
+    restart cycle. Issuing at OUT_FOR_DELIVERY keeps the
+    code fresh and valid only for the delivery in
+    progress.
     """
 
     # ==================================================
@@ -332,10 +343,11 @@ class OrderFulfillmentService:
         Mark fulfillment ready for dispatch.
 
         Delivery creation is delegated to
-        DeliveryService.create_delivery. A 6-digit OTP is
-        generated and sent to the customer at this point;
-        the assigned rider will require it to complete the
-        handover.
+        DeliveryService.create_delivery.
+
+        NOTE: The delivery OTP is NOT generated here. It is
+        generated when the fulfillment transitions to
+        OUT_FOR_DELIVERY (rider is en route).
         """
 
         fulfillment = cls._lock_fulfillment(
@@ -382,14 +394,6 @@ class OrderFulfillmentService:
                 "before dispatch."
             )
 
-        # --------------------------------------------------
-        # Generate the delivery OTP (idempotent).
-        # --------------------------------------------------
-
-        otp = cls._ensure_delivery_otp(
-            fulfillment=fulfillment,
-        )
-
         fulfillment.status = (
             OrderFulfillment.Status.READY_FOR_DISPATCH
         )
@@ -405,15 +409,6 @@ class OrderFulfillmentService:
 
         delivery = cls._create_delivery(
             fulfillment=fulfillment,
-        )
-
-        # --------------------------------------------------
-        # Notify customer of their delivery OTP.
-        # --------------------------------------------------
-
-        cls._notify_customer_delivery_otp(
-            fulfillment=fulfillment,
-            otp=otp,
         )
 
         return fulfillment, delivery
@@ -496,7 +491,10 @@ class OrderFulfillmentService:
         Return the fulfillment's delivery OTP, generating a
         fresh one if it has not been set yet.
 
-        Idempotent.
+        Idempotent within a single dispatch cycle. The OTP
+        is cleared when the fulfillment is cancelled or
+        failed, so a re-dispatched fulfillment gets a new
+        code.
         """
 
         if fulfillment.delivery_otp:
@@ -532,10 +530,10 @@ class OrderFulfillmentService:
         otp,
     ):
         """
-        Send the OTP to the customer via SMS / push / email.
+        Send the OTP to the customer via SMS and push.
 
-        Best-effort. A failure here does not roll back
-        dispatch.
+        Best-effort. A failure here does not roll back the
+        state transition.
         """
 
         try:
@@ -632,7 +630,6 @@ class OrderFulfillmentService:
         # OrderFulfillment.
         # --------------------------------------------------
 
-        # 1. Lock the Delivery.
         delivery = (
             Delivery.objects
             .select_for_update()
@@ -640,7 +637,6 @@ class OrderFulfillmentService:
             .get(pk=delivery.pk)
         )
 
-        # 2. Lock the DeliveryAssignment.
         assignment = (
             DeliveryAssignment.objects
             .select_for_update()
@@ -657,7 +653,6 @@ class OrderFulfillmentService:
                 "You are not assigned to this delivery."
             )
 
-        # 3. Lock the OrderFulfillment.
         fulfillment = cls._lock_fulfillment(
             fulfillment=delivery.fulfillment,
         )
@@ -723,14 +718,6 @@ class OrderFulfillmentService:
 
         # --------------------------------------------------
         # OTP valid. Complete the assignment first.
-        #
-        # This transitions:
-        #   Assignment: ARRIVED_DESTINATION → COMPLETED
-        #   Delivery:   IN_TRANSIT          → DELIVERED
-        #   Rider:      unavailable         → available
-        #
-        # AssignmentService.complete does NOT cascade to
-        # OrderFulfillment. That responsibility is here.
         # --------------------------------------------------
 
         AssignmentService.complete(assignment=assignment)
@@ -904,6 +891,18 @@ class OrderFulfillmentService:
     @classmethod
     @transaction.atomic
     def mark_out_for_delivery(cls, *, fulfillment):
+        """
+        Mark fulfillment OUT_FOR_DELIVERY.
+
+        This is the trigger point for the delivery OTP:
+
+            1. Generate the OTP (idempotent).
+            2. Transition the fulfillment.
+            3. Notify the customer via SMS and push.
+
+        The OTP is delivered at this point because the
+        rider has physically left the store and is en route.
+        """
 
         fulfillment = cls._lock_fulfillment(
             fulfillment=fulfillment,
@@ -918,6 +917,14 @@ class OrderFulfillmentService:
                 "going out for delivery."
             )
 
+        # --------------------------------------------------
+        # Generate the delivery OTP (idempotent).
+        # --------------------------------------------------
+
+        otp = cls._ensure_delivery_otp(
+            fulfillment=fulfillment,
+        )
+
         fulfillment.status = (
             OrderFulfillment.Status.OUT_FOR_DELIVERY
         )
@@ -931,6 +938,15 @@ class OrderFulfillmentService:
                 "out_for_delivery_at",
                 "updated_at",
             ],
+        )
+
+        # --------------------------------------------------
+        # Notify customer of their delivery OTP.
+        # --------------------------------------------------
+
+        cls._notify_customer_delivery_otp(
+            fulfillment=fulfillment,
+            otp=otp,
         )
 
         return fulfillment
@@ -967,10 +983,28 @@ class OrderFulfillmentService:
         )
         fulfillment.cancelled_at = timezone.now()
 
+        # --------------------------------------------------
+        # Clear the OTP.
+        #
+        # A cancelled fulfillment must not carry an OTP
+        # into any subsequent re-dispatch. If it is
+        # restarted, a fresh code is generated at
+        # OUT_FOR_DELIVERY.
+        # --------------------------------------------------
+
+        fulfillment.delivery_otp = ""
+        fulfillment.delivery_otp_generated_at = None
+        fulfillment.delivery_otp_verified_at = None
+        fulfillment.delivery_otp_attempts = 0
+
         fulfillment.save(
             update_fields=[
                 "status",
                 "cancelled_at",
+                "delivery_otp",
+                "delivery_otp_generated_at",
+                "delivery_otp_verified_at",
+                "delivery_otp_attempts",
                 "updated_at",
             ],
         )
@@ -1100,10 +1134,26 @@ class OrderFulfillmentService:
             )
             fulfillment.cancelled_at = timezone.now()
 
+            # ----------------------------------------------
+            # Clear the OTP.
+            #
+            # A FAILED fulfillment carries no valid OTP
+            # into any future workflow.
+            # ----------------------------------------------
+
+            fulfillment.delivery_otp = ""
+            fulfillment.delivery_otp_generated_at = None
+            fulfillment.delivery_otp_verified_at = None
+            fulfillment.delivery_otp_attempts = 0
+
             fulfillment.save(
                 update_fields=[
                     "status",
                     "cancelled_at",
+                    "delivery_otp",
+                    "delivery_otp_generated_at",
+                    "delivery_otp_verified_at",
+                    "delivery_otp_attempts",
                     "updated_at",
                 ],
             )

@@ -20,8 +20,6 @@ SECRET_KEY = config("SECRET_KEY")
 # DEBUG = True
 DEBUG = config("DEBUG", cast=bool)
 
-ALLOWED_HOSTS = []
-
 
 # Application definition
 
@@ -246,11 +244,123 @@ PAYSTACK_WEBHOOK_IPS = [
 ]
 
 
-
-
+# Paystack credentials
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY")
 PAYSTACK_CALLBACK_URL = config(
     "PAYSTACK_CALLBACK_URL",
     default="https://yourapp.com/payments/callback/",
 )
+
+
+# ==================================================
+# Celery
+# ==================================================
+#
+# Broker and result backend are required in production.
+# Fails loudly at startup if either is missing.
+#
+# Local dev: set CELERY_BROKER_URL=redis://localhost:6379/0
+# in .env and start Redis locally.
+# ==================================================
+
+CELERY_BROKER_URL = config("CELERY_BROKER_URL")
+
+CELERY_RESULT_BACKEND = config(
+    "CELERY_RESULT_BACKEND",
+    default="",
+)
+
+# Serialization
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+
+# Time zone — matches Django's TIME_ZONE
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+
+# Task behaviour
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 300          # hard limit, seconds
+CELERY_TASK_SOFT_TIME_LIMIT = 240     # soft limit, seconds
+CELERY_TASK_ACKS_LATE = True          # ack after execution, not before
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
+# Worker behaviour
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 200   # recycle workers periodically
+
+# Beat schedule
+CELERY_BEAT_SCHEDULE = {
+
+    # ==================================================
+    # Offer lifecycle
+    # ==================================================
+    #
+    # Expire PENDING offers whose expires_at passed, and
+    # trigger redispatch. 60-second cadence keeps the
+    # loop tight without hammering the broker.
+    # ------------------------------------------------
+    "deliveries.expire_stale_offers": {
+        "task": "deliveries.expire_stale_offers",
+        "schedule": 60.0,
+    },
+
+    # ==================================================
+    # Scheduled dispatch
+    # ==================================================
+    #
+    # Fire mark_ready_for_dispatch for SCHEDULED deliveries
+    # within the 15-minute pre-pickup window.
+    # ------------------------------------------------
+    "order.dispatch_scheduled_deliveries": {
+        "task": "order.dispatch_scheduled_deliveries",
+        "schedule": 60.0,
+    },
+
+    # ==================================================
+    # OTP safety net
+    # ==================================================
+    #
+    # Recover OUT_FOR_DELIVERY fulfillments that never got
+    # a delivery OTP (failed cascade).
+    # ------------------------------------------------
+    "order.sweep_missing_delivery_otps": {
+        "task": "order.sweep_missing_delivery_otps",
+        "schedule": 300.0,  # every 5 minutes
+    },
+
+    # ==================================================
+    # Refund retry
+    # ==================================================
+    #
+    # Retry FAILED refunds from the last 7 days.
+    # ------------------------------------------------
+    "order.retry_failed_refunds": {
+        "task": "order.retry_failed_refunds",
+        "schedule": 900.0,  # every 15 minutes
+    },
+
+    # ==================================================
+    # Rider earnings settlement
+    # ==================================================
+    #
+    # Credit rider wallets for completed assignments.
+    # ------------------------------------------------
+    "wallet.settle_rider_earnings": {
+        "task": "wallet.settle_rider_earnings",
+        "schedule": 900.0,  # every 15 minutes
+    },
+
+    # ==================================================
+    # Housekeeping
+    # ==================================================
+    #
+    # Delete stale IPStateMapping rows (>90 days idle).
+    # ------------------------------------------------
+    "common.cleanup_ip_state_mappings": {
+        "task": "common.cleanup_ip_state_mappings",
+        "schedule": 86400.0,  # daily
+    },
+}

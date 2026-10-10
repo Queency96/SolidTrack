@@ -9,8 +9,10 @@ from deliveries.models.delivery_offer import DeliveryOffer
 from .assignment import AssignmentService
 from .context import DispatchContext
 from .events import (
+    DeliveryAssignedEvent,
     DeliveryCreatedEvent,
-    DeliveryOfferAcceptedEvent,
+    DeliveryOfferExpiredEvent,
+    DeliveryOfferRejectedEvent,
 )
 from .exceptions import (
     AssignmentAlreadyExists,
@@ -55,12 +57,6 @@ class DispatchCoordinator:
     def delivery_created(cls, delivery):
         """
         Entry point after a Delivery has been created.
-
-        The DeliveryCreatedEvent MUST be published after the surrounding
-        transaction commits.
-
-        Dispatch is also deferred until commit when this method is called
-        from inside an atomic transaction.
         """
 
         if delivery is None:
@@ -79,9 +75,6 @@ class DispatchCoordinator:
                     exception=exc,
                 )
 
-        # NOTE: order matters. Register publish first, dispatch second,
-        # so that on-commit execution publishes the creation event
-        # before beginning dispatch.
         transaction.on_commit(
             lambda delivery_id=delivery_id: (
                 cls._publish_delivery_created_by_id(delivery_id)
@@ -197,12 +190,6 @@ class DispatchCoordinator:
     ):
         """
         Handle a rider's response to a delivery offer.
-
-        Supported actions:
-            ACCEPT
-            REJECT
-
-        `reason` is only meaningful for REJECT.
         """
 
         if offer is None:
@@ -247,6 +234,12 @@ class DispatchCoordinator:
 
                 expired_offer = DeliveryOfferService.expire(
                     offer=offer,
+                )
+
+                transaction.on_commit(
+                    lambda offer_id=expired_offer.pk: (
+                        cls._publish_offer_expired_by_id(offer_id)
+                    )
                 )
 
             cls._notify_offer_expired(expired_offer)
@@ -387,9 +380,6 @@ class DispatchCoordinator:
     ):
         """
         Reject an offer and optionally redispatch.
-
-        `reason` is forwarded to DeliveryOfferService.reject() and
-        recorded on the offer's rejection_reason field.
         """
 
         if offer is None:
@@ -408,6 +398,12 @@ class DispatchCoordinator:
                 rejected_offer = DeliveryOfferService.reject(
                     offer=offer,
                     reason=reason,
+                )
+
+                transaction.on_commit(
+                    lambda offer_id=rejected_offer.pk: (
+                        cls._publish_offer_rejected_by_id(offer_id)
+                    )
                 )
 
             cls._notify_offer_rejected(rejected_offer)
@@ -443,8 +439,6 @@ class DispatchCoordinator:
     ):
         """
         Redispatch after a rejected or expired offer.
-
-        Does not lock the delivery here; dispatch() owns the lock.
         """
 
         if offer is None:
@@ -566,9 +560,6 @@ class DispatchCoordinator:
 
     @classmethod
     def _get_current_attempt(cls, delivery):
-        """
-        Attempt = distinct riders already offered this delivery + 1.
-        """
         distinct_rider_count = (
             DeliveryOffer.objects
             .filter(delivery_id=delivery.pk)
@@ -751,9 +742,77 @@ class DispatchCoordinator:
 
     @staticmethod
     def _publish_offer_accepted(assignment):
+        """
+        Publish DeliveryAssignedEvent after the assignment
+        transaction commits.
+        """
         try:
             EventPublisher.publish(
-                DeliveryOfferAcceptedEvent(assignment=assignment)
+                DeliveryAssignedEvent(assignment=assignment)
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Offer rejected event
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _publish_offer_rejected_by_id(cls, offer_id):
+        try:
+            offer = (
+                DeliveryOffer.objects
+                .select_related("delivery", "rider")
+                .get(pk=offer_id)
+            )
+        except DeliveryOffer.DoesNotExist:
+            return
+
+        cls._publish_offer_rejected(offer)
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _publish_offer_rejected(offer):
+        """
+        Publish DeliveryOfferRejectedEvent after the rejection
+        transaction commits.
+        """
+        try:
+            EventPublisher.publish(
+                DeliveryOfferRejectedEvent(offer=offer)
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Offer expired event
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _publish_offer_expired_by_id(cls, offer_id):
+        try:
+            offer = (
+                DeliveryOffer.objects
+                .select_related("delivery", "rider")
+                .get(pk=offer_id)
+            )
+        except DeliveryOffer.DoesNotExist:
+            return
+
+        cls._publish_offer_expired(offer)
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _publish_offer_expired(offer):
+        """
+        Publish DeliveryOfferExpiredEvent after the expiration
+        transaction commits.
+        """
+        try:
+            EventPublisher.publish(
+                DeliveryOfferExpiredEvent(offer=offer)
             )
         except Exception:
             pass
